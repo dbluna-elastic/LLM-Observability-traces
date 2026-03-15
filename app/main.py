@@ -26,7 +26,12 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-client = OpenAI(api_key=getenv("OPENAI_API_KEY"))
+# Support OpenAI or Ollama (OpenAI-compatible): set OPENAI_API_BASE for Ollama (e.g. http://ollama:11434/v1)
+_api_base = getenv("OPENAI_API_BASE")
+_client_kwargs = {"api_key": getenv("OPENAI_API_KEY", "ollama")}
+if _api_base:
+    _client_kwargs["base_url"] = _api_base.rstrip("/")
+client = OpenAI(**_client_kwargs)
 
 app = FastAPI(title="Chatbot with LLM Observability")
 

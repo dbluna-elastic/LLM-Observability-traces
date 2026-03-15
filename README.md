@@ -4,26 +4,28 @@ A small website with a chatbot running in Docker, instrumented with [OpenLLMetry
 
 ## Architecture
 
-- **App**: FastAPI backend + static chat UI. Uses OpenAI (or compatible API) and the Traceloop SDK so every LLM call is traced.
+- **App**: FastAPI backend + static chat UI. Uses Ollama (OpenAI-compatible API) or OpenAI and the Traceloop SDK so every LLM call is traced.
+- **Ollama**: Optional local LLM service; runs **tinyllama** by default and pulls it on first start.
 - **OpenTelemetry Collector**: Receives OTLP from the app and forwards traces/metrics/logs to Elastic APM Server (8.x+ supports OTLP on port 8200).
 - **Elastic**: Your existing cluster with APM Server and Kibana. Traces show up under **Observability → APM → Services** as `chatbot-service` (or your `OTEL_SERVICE_NAME`).
 
 ## Prerequisites
 
 - Docker and Docker Compose
-- OpenAI API key
-- Elastic cluster with **APM Server 8.x+** (OTLP enabled on port 8200)
+- **Elastic** cluster with **APM Server 8.x+** (OTLP enabled on port 8200)
+- **LLM**: either **Ollama** (local, default) or an **OpenAI API key**
 
-## Quick start
+## Quick start (Ollama + small model)
 
-1. **Copy env and set required variables**
+The stack is set up to use **Ollama** with the **tinyllama** model by default. On first run, the Ollama container pulls the model automatically.
+
+1. **Copy env and set Elastic**
 
    ```bash
    cp .env.example .env
-   # Edit .env and set at least:
-   #   OPENAI_API_KEY=sk-...
+   # Edit .env and set:
    #   ELASTIC_APM_SERVER_URL=https://your-apm-host:8200
-   # If using Elastic Cloud or secured APM, set ELASTIC_APM_SECRET_TOKEN.
+   # Optional: ELASTIC_APM_SECRET_TOKEN. OPENAI_API_BASE and OPENAI_MODEL are already set for Ollama.
    ```
 
 2. **Run with Docker Compose**
@@ -31,6 +33,7 @@ A small website with a chatbot running in Docker, instrumented with [OpenLLMetry
    ```bash
    docker compose up --build
    ```
+   The first time, the Ollama service will pull `tinyllama` (~600MB); subsequent starts are fast.
 
 3. **Open the app**
 
@@ -43,17 +46,32 @@ A small website with a chatbot running in Docker, instrumented with [OpenLLMetry
    - Select service `chatbot-service`
    - You’ll see transactions/spans for each chat and LLM call, including tool calls, token usage, and model name.
 
+## Using OpenAI instead of Ollama
+
+In `.env`, clear the Ollama base URL and set your API key and model:
+
+```bash
+OPENAI_API_BASE=
+OPENAI_API_KEY=sk-...
+OPENAI_MODEL=gpt-4o-mini
+CHATBOT_USE_TOOLS=true
+```
+
+You can then remove or stop the `ollama` service in docker-compose if you don’t need it.
+
 ## Environment variables
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `OPENAI_API_KEY` | Yes | OpenAI API key for the chatbot |
+| `OPENAI_API_BASE` | No | LLM API base URL. Set to `http://ollama:11434/v1` for Ollama (default in compose). Leave unset for OpenAI. |
+| `OPENAI_API_KEY` | For OpenAI | OpenAI API key. Use any value (e.g. `ollama`) when using Ollama. |
+| `OPENAI_MODEL` | No | Model name: `tinyllama` for Ollama (default), or e.g. `gpt-4o-mini` for OpenAI. |
+| `OLLAMA_MODEL` | No | Model for Ollama to pull on first start (default: `tinyllama`). |
 | `ELASTIC_APM_SERVER_URL` | Yes | APM Server URL (e.g. `https://your-host:8200` or Elastic Cloud URL) |
 | `ELASTIC_APM_SECRET_TOKEN` | No | APM secret token for authenticated APM Server |
 | `ELASTIC_APM_INSECURE` | No | Set to `true` for self-signed or dev TLS (default: `false`) |
 | `OTEL_SERVICE_NAME` | No | Service name in Kibana (default: `chatbot-service`) |
-| `OPENAI_MODEL` | No | Model name (default: `gpt-4o-mini`) |
-| `CHATBOT_USE_TOOLS` | No | Enable tool-call demo for richer traces (default: `true`) |
+| `CHATBOT_USE_TOOLS` | No | Enable tool-call demo (default: `false` with Ollama; set `true` for OpenAI) |
 
 ## What gets traced
 
@@ -77,14 +95,17 @@ source .venv/bin/activate   # or .venv\Scripts\activate on Windows
 pip install -r requirements.txt
 ```
 
-Set env vars (e.g. from `.env`) and point the app at a local collector:
+Set env vars (e.g. from `.env`) and point the app at a local collector. For Ollama (with `ollama serve` running locally):
 
 ```bash
-export OPENAI_API_KEY=sk-...
+export OPENAI_API_BASE=http://localhost:11434/v1
+export OPENAI_MODEL=tinyllama
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
-# Run OTEL Collector locally (e.g. docker run with otel-collector-config.yaml) with ELASTIC_APM_SERVER_URL set
+# Run OTEL Collector locally with ELASTIC_APM_SERVER_URL set
 uvicorn app.main:app --reload --port 8088
 ```
+
+For OpenAI instead: set `OPENAI_API_KEY=sk-...` and leave `OPENAI_API_BASE` unset.
 
 Then open [http://localhost:8088](http://localhost:8088).
 

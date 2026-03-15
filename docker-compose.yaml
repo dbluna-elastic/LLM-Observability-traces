@@ -1,5 +1,5 @@
 # Chatbot website + OpenTelemetry Collector → Elastic APM
-# Set ELASTIC_APM_SERVER_URL and OPENAI_API_KEY (see .env.example).
+# With Ollama: set OPENAI_API_BASE=http://ollama:11434/v1 and OPENAI_MODEL=tinyllama (see .env.example).
 
 services:
   app:
@@ -7,13 +7,27 @@ services:
     ports:
       - "8088:8088"
     environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-ollama}
+      - OPENAI_API_BASE=${OPENAI_API_BASE:-http://ollama:11434/v1}
+      - OPENAI_MODEL=${OPENAI_MODEL:-tinyllama}
       - OTEL_SERVICE_NAME=${OTEL_SERVICE_NAME:-chatbot-service}
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
-      - CHATBOT_USE_TOOLS=${CHATBOT_USE_TOOLS:-true}
+      - CHATBOT_USE_TOOLS=${CHATBOT_USE_TOOLS:-false}
     depends_on:
       - otel-collector
+      - ollama
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama:0.4.5
+    entrypoint: ["/bin/sh", "/scripts/ollama-entrypoint.sh"]
+    volumes:
+      - ollama-data:/root/.ollama
+      - ./scripts/ollama-entrypoint.sh:/scripts/ollama-entrypoint.sh:ro
+    environment:
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-tinyllama}
+    ports:
+      - "11434:11434"
     restart: unless-stopped
 
   otel-collector:
@@ -30,3 +44,6 @@ services:
       - "4317:4317"   # OTLP gRPC
       - "4318:4318"   # OTLP HTTP
     restart: unless-stopped
+
+volumes:
+  ollama-data:
