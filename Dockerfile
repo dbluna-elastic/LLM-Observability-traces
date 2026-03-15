@@ -14,7 +14,7 @@ COPY app/ ./app/
 COPY otel-collector-config.yaml ./
 
 # Default port; override with PORT env
-EXPOSE 8000
+EXPOSE 8088
 
 # Run the API (OTEL collector runs as separate service)
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8088"]

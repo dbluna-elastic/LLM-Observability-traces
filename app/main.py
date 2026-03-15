@@ -122,7 +122,7 @@ def main():
     uvicorn.run(
         "app.main:app",
         host="0.0.0.0",
-        port=int(getenv("PORT", "8000")),
+        port=int(getenv("PORT", "8088")),
         reload=getenv("ENV", "development") == "development",
     )
 

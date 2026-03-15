@@ -34,8 +34,8 @@ A small website with a chatbot running in Docker, instrumented with [OpenLLMetry
 
 3. **Open the app**
 
-   - App (chat UI): [http://localhost:8000](http://localhost:8000)
-   - Health: [http://localhost:8000/health](http://localhost:8000/health)
+   - App (chat UI): [http://localhost:8088](http://localhost:8088)
+   - Health: [http://localhost:8088/health](http://localhost:8088/health)
 
 4. **View traces in Elastic**
 
@@ -83,10 +83,10 @@ Set env vars (e.g. from `.env`) and point the app at a local collector:
 export OPENAI_API_KEY=sk-...
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
 # Run OTEL Collector locally (e.g. docker run with otel-collector-config.yaml) with ELASTIC_APM_SERVER_URL set
-uvicorn app.main:app --reload --port 8000
+uvicorn app.main:app --reload --port 8088
 ```
 
-Then open [http://localhost:8000](http://localhost:8000).
+Then open [http://localhost:8088](http://localhost:8088).
 
 ## References
 
