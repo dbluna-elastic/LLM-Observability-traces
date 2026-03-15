@@ -1,0 +1,32 @@
+# Chatbot website + OpenTelemetry Collector → Elastic APM
+# Set ELASTIC_APM_SERVER_URL and OPENAI_API_KEY (see .env.example).
+
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}
+      - OTEL_SERVICE_NAME=${OTEL_SERVICE_NAME:-chatbot-service}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
+      - CHATBOT_USE_TOOLS=${CHATBOT_USE_TOOLS:-true}
+    depends_on:
+      - otel-collector
+    restart: unless-stopped
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.109.0
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otelcol/config.yaml:ro
+    environment:
+      - ELASTIC_APM_SERVER_URL=${ELASTIC_APM_SERVER_URL}
+      - ELASTIC_APM_SECRET_TOKEN=${ELASTIC_APM_SECRET_TOKEN:-}
+      - ELASTIC_APM_INSECURE=${ELASTIC_APM_INSECURE:-false}
+      - OTEL_SERVICE_NAME=${OTEL_SERVICE_NAME:-chatbot-service}
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+    restart: unless-stopped

@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Chatbot · OpenLLMetry + Elastic</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #0f0f12;
+      --surface: #18181c;
+      --border: #2a2a30;
+      --text: #e4e4e7;
+      --text-muted: #a1a1aa;
+      --accent: #7c3aed;
+      --accent-hover: #8b5cf6;
+      --user-msg: #3b82f6;
+      --assistant-msg: #27272a;
+      --radius: 12px;
+      --shadow: 0 4px 24px rgba(0,0,0,0.4);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: 'DM Sans', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      display: flex;
+      flex-direction: column;
+      background-image:
+        radial-gradient(ellipse 80% 50% at 50% -20%, rgba(124, 58, 237, 0.15), transparent),
+        radial-gradient(ellipse 60% 40% at 100% 100%, rgba(59, 130, 246, 0.08), transparent);
+    }
+
+    header {
+      padding: 1rem 1.5rem;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .logo {
+      width: 36px;
+      height: 36px;
+      background: linear-gradient(135deg, var(--accent), #3b82f6);
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 600;
+      font-size: 1rem;
+    }
+
+    h1 {
+      font-size: 1.25rem;
+      font-weight: 600;
+      margin: 0;
+    }
+
+    .badge {
+      font-size: 0.7rem;
+      padding: 0.2rem 0.5rem;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text-muted);
+      font-family: 'JetBrains Mono', monospace;
+      margin-left: auto;
+    }
+
+    main {
+      flex: 1;
+      max-width: 720px;
+      width: 100%;
+      margin: 0 auto;
+      padding: 1.5rem;
+      display: flex;
+      flex-direction: column;
+    }
+
+    #messages {
+      flex: 1;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+      padding-bottom: 1rem;
+    }
+
+    .msg {
+      max-width: 85%;
+      padding: 0.875rem 1rem;
+      border-radius: var(--radius);
+      line-height: 1.5;
+      box-shadow: var(--shadow);
+    }
+
+    .msg.user {
+      align-self: flex-end;
+      background: var(--user-msg);
+      color: #fff;
+    }
+
+    .msg.assistant {
+      align-self: flex-start;
+      background: var(--assistant-msg);
+      border: 1px solid var(--border);
+    }
+
+    .msg .role {
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+      margin-bottom: 0.35rem;
+    }
+
+    .msg.user .role { color: rgba(255,255,255,0.8); }
+
+    .msg .content {
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .form-wrap {
+      position: sticky;
+      bottom: 0;
+      padding: 1rem 0;
+      background: linear-gradient(to top, var(--bg) 60%, transparent);
+    }
+
+    form {
+      display: flex;
+      gap: 0.5rem;
+      align-items: flex-end;
+    }
+
+    #input {
+      flex: 1;
+      min-height: 48px;
+      max-height: 160px;
+      padding: 0.75rem 1rem;
+      font-family: inherit;
+      font-size: 1rem;
+      color: var(--text);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      resize: none;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+
+    #input::placeholder {
+      color: var(--text-muted);
+    }
+
+    #input:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(124, 58, 237, 0.2);
+    }
+
+    button[type="submit"] {
+      height: 48px;
+      padding: 0 1.25rem;
+      font-family: inherit;
+      font-size: 0.95rem;
+      font-weight: 500;
+      color: #fff;
+      background: var(--accent);
+      border: none;
+      border-radius: var(--radius);
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    button[type="submit"]:hover {
+      background: var(--accent-hover);
+    }
+
+    button[type="submit"]:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
+    .error {
+      color: #f87171;
+      font-size: 0.9rem;
+      padding: 0.5rem 0;
+    }
+
+    .typing {
+      opacity: 0.7;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="logo">AI</div>
+    <h1>Chatbot</h1>
+    <span class="badge">OpenLLMetry → Elastic</span>
+  </header>
+
+  <main>
+    <div id="messages"></div>
+    <div class="form-wrap">
+      <form id="form">
+        <textarea
+          id="input"
+          placeholder="Type a message..."
+          rows="1"
+          required
+        ></textarea>
+        <button type="submit" id="submit">Send</button>
+      </form>
+      <div id="error" class="error" aria-live="polite"></div>
+    </div>
+  </main>
+
+  <script>
+    const messagesEl = document.getElementById('messages');
+    const form = document.getElementById('form');
+    const input = document.getElementById('input');
+    const submitBtn = document.getElementById('submit');
+    const errorEl = document.getElementById('error');
+
+    const API_BASE = '';
+
+    function addMessage(role, content, isTyping = false) {
+      const div = document.createElement('div');
+      div.className = `msg ${role}${isTyping ? ' typing' : ''}`;
+      div.innerHTML = `
+        <div class="role">${role}</div>
+        <div class="content">${escapeHtml(content)}</div>
+      `;
+      messagesEl.appendChild(div);
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+      return div;
+    }
+
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    function setError(msg) {
+      errorEl.textContent = msg || '';
+    }
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const text = input.value.trim();
+      if (!text) return;
+
+      const userMsg = addMessage('user', text);
+      input.value = '';
+      submitBtn.disabled = true;
+      setError('');
+
+      const assistantDiv = addMessage('assistant', '…', true);
+      const contentEl = assistantDiv.querySelector('.content');
+
+      try {
+        const messages = Array.from(messagesEl.querySelectorAll('.msg:not(.typing)')).map(m => ({
+          role: m.classList.contains('user') ? 'user' : 'assistant',
+          content: m.querySelector('.content').textContent
+        }));
+
+        const res = await fetch(`${API_BASE}/api/chat`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            messages: messages.map(m => ({ role: m.role, content: m.content }))
+          })
+        });
+
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.detail || res.statusText || `HTTP ${res.status}`);
+        }
+
+        const data = await res.json();
+        contentEl.textContent = data.message || '(No response)';
+        assistantDiv.classList.remove('typing');
+      } catch (err) {
+        contentEl.textContent = 'Sorry, something went wrong.';
+        assistantDiv.classList.remove('typing');
+        setError(err.message || 'Request failed');
+      }
+
+      submitBtn.disabled = false;
+    });
+
+    // Auto-resize textarea
+    input.addEventListener('input', () => {
+      input.style.height = 'auto';
+      input.style.height = Math.min(input.scrollHeight, 160) + 'px';
+    });
+  </script>
+</body>
+</html>
