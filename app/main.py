@@ -22,6 +22,7 @@ Traceloop.init(
     api_endpoint=getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector:4318"),
     disable_batch=getenv("OTEL_DISABLE_BATCH", "false").lower() == "true",
     should_enrich_metrics=getenv("TRACELOOP_ENRICH_TOKENS", "true").lower() == "true",
+    resource_attributes={"deployment.environment": getenv("SERVICE_ENVIRONMENT", "chatbot")},
 )
 
 from opentelemetry import trace
@@ -65,6 +66,7 @@ class ChatMessage(BaseModel):
 class ChatRequest(BaseModel):
     messages: list[ChatMessage]
     category: str | None = None  # optional, e.g. "code_review", "general"
+    name: str | None = None  # optional; when set, tool + task personalize the prompt
 
 
 class ChatResponse(BaseModel):
@@ -101,16 +103,56 @@ def retrieve_documents(query: str) -> list[str]:
 
 
 def build_prompt(context: list[str], messages: list[dict]) -> list[dict]:
-    """Build messages for the LLM. If context is non-empty, prepend a system message with it."""
+    """Build messages for the LLM. If context is non-empty, merge it into the first system message or add one."""
     if not context:
         return messages
     context_block = "\n\n".join(context)
-    return [{"role": "system", "content": f"Context:\n{context_block}"}] + messages
+    context_system = {"role": "system", "content": f"Context:\n{context_block}"}
+    if messages and messages[0].get("role") == "system":
+        # Merge so personalization (e.g. "You are speaking to X") stays visible; put it first.
+        existing = messages[0].get("content", "")
+        merged = f"{existing}\n\n{context_system['content']}"
+        return [{"role": "system", "content": merged}] + messages[1:]
+    return [context_system] + messages
+
+
+@tool(name="get_user_preferences")
+def get_user_preferences(name: str) -> dict:
+    """Tool: return user preferences for the given name (stub). Returns dict with 'name' and 'preferences'."""
+    return {
+        "name": name,
+        "preferences": "Preferred language: English. Interests: general.",
+    }
+
+
+@task(name="personalize_prompt")
+def personalize_prompt(tool_result: dict, messages: list[dict]) -> list[dict]:
+    """Task: use name and preferences from the tool result to prepend a personalized system message."""
+    name = (tool_result.get("name") or "").strip()
+    preferences = tool_result.get("preferences", "")
+    system_content = (
+        f"The user's name is {name}. When they ask for their name or how to be addressed, say their name is {name}. "
+        f"You are speaking to {name}. User preferences: {preferences}. "
+        "Keep responses concise and friendly."
+    )
+    out = [{"role": "system", "content": system_content}] + list(messages)
+    # Inject name into the latest user message so the model sees it in-conversation (helps small models).
+    if name:
+        for i in range(len(out) - 1, -1, -1):
+            if out[i].get("role") == "user":
+                content = out[i].get("content", "")
+                if content and not content.strip().lower().startswith("(the user's name is"):
+                    out[i] = {"role": "user", "content": f"(The user's name is {name}.)\n\n{content}"}
+                break
+    return out
 
 
 @workflow(name="handle_chat")
-def handle_chat(query: str, messages: list[dict]) -> tuple[str, dict]:
-    """Workflow: retrieve context then generate response."""
+def handle_chat(query: str, messages: list[dict], name: str | None = None) -> tuple[str, dict]:
+    """Workflow: optional tool+task for name/personalization, then retrieve context and generate response."""
+    if name and name.strip():
+        tool_result = get_user_preferences(name.strip())
+        messages = personalize_prompt(tool_result, messages)
     context = retrieve_context(query)
     return generate_response(context, messages)
 
@@ -195,7 +237,8 @@ def chat(req: ChatRequest, request: Request):
             query = m.get("content", "")
             break
 
-    reply, usage = handle_chat(query, messages)
+    name = req.name or None
+    reply, usage = handle_chat(query, messages, name=name)
 
     span = trace.get_current_span()
     span.set_attribute("response.quality_score", 0.0)  # placeholder; set from feedback when available

@@ -21,6 +21,9 @@ processors:
       - key: service.name
         action: upsert
         value: ${OTEL_SERVICE_NAME}
+      - key: deployment.environment
+        action: upsert
+        value: ${SERVICE_ENVIRONMENT}
 
 exporters:
   # Set ELASTIC_APM_SERVER_URL (e.g. https://your-cluster:8200). For auth set ELASTIC_APM_SECRET_TOKEN.

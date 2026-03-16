@@ -11,6 +11,7 @@ services:
       - OPENAI_API_BASE=${OPENAI_API_BASE:-http://ollama:11434/v1}
       - OPENAI_MODEL=${OPENAI_MODEL:-tinyllama}
       - OTEL_SERVICE_NAME=${OTEL_SERVICE_NAME:-chatbot-service}
+      - SERVICE_ENVIRONMENT=${SERVICE_ENVIRONMENT:-chatbot}
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
       - CHATBOT_USE_TOOLS=${CHATBOT_USE_TOOLS:-false}
     depends_on:
@@ -40,6 +41,7 @@ services:
       - ELASTIC_APM_SECRET_TOKEN=${ELASTIC_APM_SECRET_TOKEN:-}
       - ELASTIC_APM_INSECURE=${ELASTIC_APM_INSECURE:-false}
       - OTEL_SERVICE_NAME=${OTEL_SERVICE_NAME:-chatbot-service}
+      - SERVICE_ENVIRONMENT=${SERVICE_ENVIRONMENT:-chatbot}
     ports:
       - "4317:4317"   # OTLP gRPC
       - "4318:4318"   # OTLP HTTP

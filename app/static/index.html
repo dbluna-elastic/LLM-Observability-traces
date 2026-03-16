@@ -242,6 +242,32 @@
       font-size: 0.8rem;
       color: var(--text-muted);
     }
+
+    .name-wrap {
+      margin-bottom: 0.5rem;
+    }
+
+    .name-wrap label {
+      display: block;
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      margin-bottom: 0.25rem;
+    }
+
+    #nameInput {
+      width: 100%;
+      padding: 0.5rem 0.75rem;
+      font-family: inherit;
+      font-size: 0.95rem;
+      color: var(--text);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+    }
+
+    #nameInput::placeholder {
+      color: var(--text-muted);
+    }
   </style>
 </head>
 <body>
@@ -259,6 +285,10 @@
         <span id="runTestsProgress"></span>
       </div>
       <form id="form">
+        <div class="name-wrap">
+          <label for="nameInput">Name</label>
+          <input type="text" id="nameInput" placeholder="Your name (optional)" />
+        </div>
         <textarea
           id="input"
           placeholder="Type a message..."
@@ -334,11 +364,13 @@
           content: m.querySelector('.content').textContent
         }));
 
+        const nameValue = document.getElementById('nameInput').value.trim() || undefined;
         const res = await fetch(`${API_BASE}/api/chat`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            messages: messages.map(m => ({ role: m.role, content: m.content }))
+            messages: messages.map(m => ({ role: m.role, content: m.content })),
+            name: nameValue
           })
         });
 
@@ -386,10 +418,11 @@
         const assistantDiv = addMessage('assistant', '…', true);
         const contentEl = assistantDiv.querySelector('.content');
         try {
+          const nameValue = document.getElementById('nameInput').value.trim() || undefined;
           const res = await fetch(`${API_BASE}/api/chat`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ messages: [{ role: 'user', content: q.question }] })
+            body: JSON.stringify({ messages: [{ role: 'user', content: q.question }], name: nameValue })
           });
           if (!res.ok) {
             const err = await res.json().catch(() => ({}));
