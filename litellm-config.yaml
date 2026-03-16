@@ -2,6 +2,10 @@
 # Presidio services must be running (presidio-analyzer:5002, presidio-anonymizer:5001).
 # Set PRESIDIO_ANALYZER_API_BASE and PRESIDIO_ANONYMIZER_API_BASE in the litellm service env.
 
+litellm_settings:
+  callbacks: ["otel"]
+  forward_traceparent_to_llm_provider: true
+
 model_list:
   - model_name: tinyllama
     litellm_params:
@@ -14,7 +18,9 @@ guardrails:
     litellm_params:
       guardrail: presidio
       mode: pre_call
-      default_on: true
+      default_on: false
+      presidio_analyzer_api_base: "http://presidio-analyzer:5002"
+      presidio_anonymizer_api_base: "http://presidio-anonymizer:5001"
       presidio_language: "en"
       pii_entities_config:
         CREDIT_CARD: "MASK"

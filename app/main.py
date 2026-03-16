@@ -2,10 +2,13 @@
 Chatbot API with OpenLLMetry tracing to Elastic.
 Initialize Traceloop before any LLM client imports.
 """
+import logging
 import time
 import uuid
 from os import getenv
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 from dotenv import load_dotenv
 
@@ -26,11 +29,14 @@ Traceloop.init(
 )
 
 from opentelemetry import trace
+from opentelemetry.propagate import inject
 
 tracer = trace.get_tracer(getenv("OTEL_SERVICE_NAME", "chatbot-service"), "1.0.0")
 
 from openai import OpenAI
+from openai import APIError as OpenAIAPIError
 from openai import APIStatusError as OpenAIAPIStatusError
+from openai import APIConnectionError as OpenAIAPIConnectionError
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -178,16 +184,34 @@ def generate_response(context: list[str], messages: list[dict]) -> tuple[str, di
     return _chat_completion(final_messages)
 
 
+def _trace_headers() -> dict[str, str]:
+    """Inject W3C trace context (traceparent, tracestate) so LiteLLM attaches to the same trace."""
+    carrier: dict[str, str] = {}
+    inject(carrier)
+    return carrier
+
+
+def _litellm_extra_headers() -> dict[str, str] | None:
+    """If PROPAGATE_TRACE_TO_LITELLM=true, return trace context so LiteLLM shares the app trace; else None (separate traces)."""
+    if getenv("PROPAGATE_TRACE_TO_LITELLM", "false").lower() != "true":
+        return None
+    return _trace_headers()
+
+
 @task(name="chat_completion")
 def _chat_completion(messages: list[dict]) -> tuple[str, dict]:
     """LLM call as a task span; tool_calls are automatically traced by OpenLLMetry. Returns (content, usage)."""
     start = time.perf_counter()
-    response = client.chat.completions.create(
-        model=getenv("OPENAI_MODEL", "gpt-4o-mini"),
-        messages=messages,
-        tools=TOOLS if getenv("CHATBOT_USE_TOOLS", "true").lower() == "true" else None,
-        tool_choice="auto" if getenv("CHATBOT_USE_TOOLS", "true").lower() == "true" else None,
-    )
+    kwargs: dict = {
+        "model": getenv("OPENAI_MODEL", "gpt-4o-mini"),
+        "messages": messages,
+        "tools": TOOLS if getenv("CHATBOT_USE_TOOLS", "true").lower() == "true" else None,
+        "tool_choice": "auto" if getenv("CHATBOT_USE_TOOLS", "true").lower() == "true" else None,
+    }
+    extra = _litellm_extra_headers()
+    if extra:
+        kwargs["extra_headers"] = extra
+    response = client.chat.completions.create(**kwargs)
     latency_ms = int((time.perf_counter() - start) * 1000)
     span = trace.get_current_span()
     span.add_event("first_token_received", {"latency_ms": latency_ms})
@@ -249,7 +273,34 @@ def chat(req: ChatRequest, request: Request):
                 output_tokens=None,
                 total_tokens=None,
             )
-        raise
+        return ChatResponse(
+            message="The language model is temporarily unavailable. Please try again later.",
+            input_tokens=None,
+            output_tokens=None,
+            total_tokens=None,
+        )
+    except OpenAIAPIConnectionError:
+        return ChatResponse(
+            message="Cannot reach the language model. Please try again later.",
+            input_tokens=None,
+            output_tokens=None,
+            total_tokens=None,
+        )
+    except OpenAIAPIError:
+        return ChatResponse(
+            message="The language model is temporarily unavailable. Please try again later.",
+            input_tokens=None,
+            output_tokens=None,
+            total_tokens=None,
+        )
+    except Exception as e:
+        logger.exception("Unexpected error in chat: %s", e)
+        return ChatResponse(
+            message="Something went wrong. Please try again.",
+            input_tokens=None,
+            output_tokens=None,
+            total_tokens=None,
+        )
 
     span = trace.get_current_span()
     span.set_attribute("response.quality_score", 0.0)  # placeholder; set from feedback when available

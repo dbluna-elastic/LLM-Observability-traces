@@ -16,14 +16,6 @@ processors:
   memory_limiter:
     check_interval: 1s
     limit_mib: 512
-  resource:
-    attributes:
-      - key: service.name
-        action: upsert
-        value: ${OTEL_SERVICE_NAME}
-      - key: deployment.environment
-        action: upsert
-        value: ${SERVICE_ENVIRONMENT}
 
 exporters:
   # Set ELASTIC_APM_SERVER_URL (e.g. https://your-cluster:8200). For auth set ELASTIC_APM_SECRET_TOKEN.
@@ -44,13 +36,13 @@ service:
   pipelines:
     traces:
       receivers: [otlp]
-      processors: [memory_limiter, batch, resource]
+      processors: [memory_limiter, batch]
       exporters: [otlp/apm, logging]
     metrics:
       receivers: [otlp]
-      processors: [memory_limiter, batch, resource]
+      processors: [memory_limiter, batch]
       exporters: [otlp/apm, logging]
     logs:
       receivers: [otlp]
-      processors: [memory_limiter, batch, resource]
+      processors: [memory_limiter, batch]
       exporters: [otlp/apm, logging]

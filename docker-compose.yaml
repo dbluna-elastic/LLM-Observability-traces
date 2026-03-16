@@ -16,8 +16,10 @@ services:
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
       - CHATBOT_USE_TOOLS=${CHATBOT_USE_TOOLS:-false}
     depends_on:
-      - otel-collector
-      - litellm
+      otel-collector:
+        condition: service_started
+      litellm:
+        condition: service_healthy
     restart: unless-stopped
 
   litellm:
@@ -32,24 +34,47 @@ services:
       - PRESIDIO_ANONYMIZER_API_BASE=http://presidio-anonymizer:5001
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
       - OTEL_EXPORTER_OTLP_PROTOCOL=http
+      - OTEL_SERVICE_NAME=litellm-proxy
+      - OTEL_DEBUG=True
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import socket; socket.create_connection(('127.0.0.1', 4000), timeout=2)\" || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     depends_on:
-      - ollama
-      - presidio-analyzer
-      - presidio-anonymizer
+      ollama:
+        condition: service_started
+      presidio-analyzer:
+        condition: service_healthy
+      presidio-anonymizer:
+        condition: service_healthy
     restart: unless-stopped
 
   presidio-analyzer:
     image: mcr.microsoft.com/presidio-analyzer:latest
     ports:
-      - "5002:5002"
+      - "5002:3000"
     environment:
       - GRPC_PORT=5001
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import socket; socket.create_connection(('localhost', 3000), timeout=2)\" || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
     restart: unless-stopped
 
   presidio-anonymizer:
     image: mcr.microsoft.com/presidio-anonymizer:latest
     ports:
-      - "5001:5001"
+      - "5001:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import socket; socket.create_connection(('localhost', 3000), timeout=2)\" || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
     restart: unless-stopped
 
   ollama:
