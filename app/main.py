@@ -30,6 +30,7 @@ from opentelemetry import trace
 tracer = trace.get_tracer(getenv("OTEL_SERVICE_NAME", "chatbot-service"), "1.0.0")
 
 from openai import OpenAI
+from openai import APIStatusError as OpenAIAPIStatusError
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -238,7 +239,17 @@ def chat(req: ChatRequest, request: Request):
             break
 
     name = req.name or None
-    reply, usage = handle_chat(query, messages, name=name)
+    try:
+        reply, usage = handle_chat(query, messages, name=name)
+    except OpenAIAPIStatusError as e:
+        if getattr(e, "status_code", None) == 400:
+            return ChatResponse(
+                message="Request blocked by content policy. Please avoid sharing sensitive personal information.",
+                input_tokens=None,
+                output_tokens=None,
+                total_tokens=None,
+            )
+        raise
 
     span = trace.get_current_span()
     span.set_attribute("response.quality_score", 0.0)  # placeholder; set from feedback when available

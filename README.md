@@ -4,9 +4,11 @@ A small website with a chatbot running in Docker, instrumented with [OpenLLMetry
 
 ## Architecture
 
-- **App**: FastAPI backend + static chat UI. Uses Ollama (OpenAI-compatible API) or OpenAI and the Traceloop SDK so every LLM call is traced.
-- **Ollama**: Optional local LLM service; runs **tinyllama** by default and pulls it on first start.
-- **OpenTelemetry Collector**: Receives OTLP from the app and forwards traces/metrics/logs to Elastic APM Server (8.x+ supports OTLP on port 8200).
+- **App**: FastAPI backend + static chat UI. Calls the **LiteLLM proxy** (default) or Ollama/OpenAI directly. Traceloop SDK traces every LLM call.
+- **LiteLLM proxy**: OpenAI-compatible gateway on port 4000. Runs a **Presidio PII guardrail** (pre-call) so user prompts are checked before being sent to the LLM; blocks or masks sensitive data. Forwards allowed requests to Ollama.
+- **Presidio**: Two self-hosted services (analyzer on 5002, anonymizer on 5001) for PII detection and masking. No API key required.
+- **Ollama**: Local LLM service; runs **tinyllama** by default and pulls it on first start.
+- **OpenTelemetry Collector**: Receives OTLP from the app (and optionally from LiteLLM) and forwards traces to Elastic APM Server (8.x+ supports OTLP on port 8200).
 - **Elastic**: Your existing cluster with APM Server and Kibana. Traces show up under **Observability → APM → Services** as `chatbot-service` (or your `OTEL_SERVICE_NAME`).
 
 ## Prerequisites
@@ -15,9 +17,9 @@ A small website with a chatbot running in Docker, instrumented with [OpenLLMetry
 - **Elastic** cluster with **APM Server 8.x+** (OTLP enabled on port 8200)
 - **LLM**: either **Ollama** (local, default) or an **OpenAI API key**
 
-## Quick start (Ollama + small model)
+## Quick start (LiteLLM + Presidio + Ollama)
 
-The stack is set up to use **Ollama** with the **tinyllama** model by default. On first run, the Ollama container pulls the model automatically.
+The stack uses **LiteLLM** as the app’s LLM endpoint by default. LiteLLM runs a **Presidio PII guardrail** (pre-call), then forwards requests to **Ollama** (tinyllama). On first run, the Ollama container pulls the model automatically.
 
 1. **Copy env and set Elastic**
 
@@ -25,7 +27,7 @@ The stack is set up to use **Ollama** with the **tinyllama** model by default. O
    cp .env.example .env
    # Edit .env and set:
    #   ELASTIC_APM_SERVER_URL=https://your-apm-host:8200
-   # Optional: ELASTIC_APM_SECRET_TOKEN. OPENAI_API_BASE and OPENAI_MODEL are already set for Ollama.
+   # Optional: ELASTIC_APM_SECRET_TOKEN. OPENAI_API_BASE defaults to http://litellm:4000.
    ```
 
 2. **Run with Docker Compose**
@@ -33,7 +35,7 @@ The stack is set up to use **Ollama** with the **tinyllama** model by default. O
    ```bash
    docker compose up --build
    ```
-   The first time, the Ollama service will pull `tinyllama` (~600MB); subsequent starts are fast.
+   The first time, the Ollama service will pull `tinyllama` (~600MB). Presidio and LiteLLM start automatically.
 
 3. **Open the app**
 
@@ -63,10 +65,12 @@ You can then remove or stop the `ollama` service in docker-compose if you don’
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `OPENAI_API_BASE` | No | LLM API base URL. Set to `http://ollama:11434/v1` for Ollama (default in compose). Leave unset for OpenAI. |
-| `OPENAI_API_KEY` | For OpenAI | OpenAI API key. Use any value (e.g. `ollama`) when using Ollama. |
-| `OPENAI_MODEL` | No | Model name: `tinyllama` for Ollama (default), or e.g. `gpt-4o-mini` for OpenAI. |
+| `OPENAI_API_BASE` | No | LLM API base URL. Default `http://litellm:4000` (LiteLLM + Presidio guardrail → Ollama). Use `http://ollama:11434/v1` to bypass LiteLLM. Leave unset for OpenAI. |
+| `OPENAI_API_KEY` | For OpenAI | OpenAI API key. Use any value (e.g. `ollama`) when using Ollama or LiteLLM. |
+| `OPENAI_MODEL` | No | Model name: `tinyllama` for Ollama (default), or e.g. `gpt-4o-mini` for OpenAI. Must match a `model_name` in `litellm-config.yaml` when using LiteLLM. |
 | `OLLAMA_MODEL` | No | Model for Ollama to pull on first start (default: `tinyllama`). |
+| `PRESIDIO_ANALYZER_API_BASE` | No | Used by LiteLLM service (default in compose: `http://presidio-analyzer:5002`). |
+| `PRESIDIO_ANONYMIZER_API_BASE` | No | Used by LiteLLM service (default in compose: `http://presidio-anonymizer:5001`). |
 | `ELASTIC_APM_SERVER_URL` | Yes | APM Server URL (e.g. `https://your-host:8200` or Elastic Cloud URL) |
 | `ELASTIC_APM_SECRET_TOKEN` | No | APM secret token for authenticated APM Server |
 | `ELASTIC_APM_INSECURE` | No | Set to `true` for self-signed or dev TLS (default: `false`) |

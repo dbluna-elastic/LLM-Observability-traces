@@ -1,5 +1,6 @@
 # Chatbot website + OpenTelemetry Collector → Elastic APM
-# With Ollama: set OPENAI_API_BASE=http://ollama:11434/v1 and OPENAI_MODEL=tinyllama (see .env.example).
+# With LiteLLM + Presidio: set OPENAI_API_BASE=http://litellm:4000 (default) so the app calls the proxy; proxy runs PII guardrail then forwards to Ollama.
+# To bypass LiteLLM and call Ollama directly: OPENAI_API_BASE=http://ollama:11434/v1 (and remove litellm from depends_on).
 
 services:
   app:
@@ -8,7 +9,7 @@ services:
       - "8088:8088"
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY:-ollama}
-      - OPENAI_API_BASE=${OPENAI_API_BASE:-http://ollama:11434/v1}
+      - OPENAI_API_BASE=${OPENAI_API_BASE:-http://litellm:4000}
       - OPENAI_MODEL=${OPENAI_MODEL:-tinyllama}
       - OTEL_SERVICE_NAME=${OTEL_SERVICE_NAME:-chatbot-service}
       - SERVICE_ENVIRONMENT=${SERVICE_ENVIRONMENT:-chatbot}
@@ -16,7 +17,39 @@ services:
       - CHATBOT_USE_TOOLS=${CHATBOT_USE_TOOLS:-false}
     depends_on:
       - otel-collector
+      - litellm
+    restart: unless-stopped
+
+  litellm:
+    image: docker.litellm.ai/berriai/litellm:main-latest
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    ports:
+      - "4000:4000"
+    volumes:
+      - ./litellm-config.yaml:/app/config.yaml:ro
+    environment:
+      - PRESIDIO_ANALYZER_API_BASE=http://presidio-analyzer:5002
+      - PRESIDIO_ANONYMIZER_API_BASE=http://presidio-anonymizer:5001
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
+      - OTEL_EXPORTER_OTLP_PROTOCOL=http
+    depends_on:
       - ollama
+      - presidio-analyzer
+      - presidio-anonymizer
+    restart: unless-stopped
+
+  presidio-analyzer:
+    image: mcr.microsoft.com/presidio-analyzer:latest
+    ports:
+      - "5002:5002"
+    environment:
+      - GRPC_PORT=5001
+    restart: unless-stopped
+
+  presidio-anonymizer:
+    image: mcr.microsoft.com/presidio-anonymizer:latest
+    ports:
+      - "5001:5001"
     restart: unless-stopped
 
   ollama:

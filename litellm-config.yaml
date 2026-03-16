@@ -1,0 +1,24 @@
+# LiteLLM proxy: route to Ollama and run Presidio PII guardrail before each LLM call.
+# Presidio services must be running (presidio-analyzer:5002, presidio-anonymizer:5001).
+# Set PRESIDIO_ANALYZER_API_BASE and PRESIDIO_ANONYMIZER_API_BASE in the litellm service env.
+
+model_list:
+  - model_name: tinyllama
+    litellm_params:
+      model: ollama/tinyllama
+      api_base: http://ollama:11434
+      api_key: "ollama"
+
+guardrails:
+  - guardrail_name: presidio-pii
+    litellm_params:
+      guardrail: presidio
+      mode: pre_call
+      default_on: true
+      presidio_language: "en"
+      pii_entities_config:
+        CREDIT_CARD: "MASK"
+        EMAIL_ADDRESS: "MASK"
+        PHONE_NUMBER: "MASK"
+        PERSON: "MASK"
+        US_SSN: "MASK"
