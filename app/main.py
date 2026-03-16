@@ -2,6 +2,8 @@
 Chatbot API with OpenLLMetry tracing to Elastic.
 Initialize Traceloop before any LLM client imports.
 """
+import time
+import uuid
 from os import getenv
 from pathlib import Path
 
@@ -11,12 +13,15 @@ load_dotenv()
 
 # Must init Traceloop before importing OpenAI so the client is instrumented
 from traceloop.sdk import Traceloop
-from traceloop.sdk.decorators import task, workflow
+from traceloop.sdk.decorators import task, tool, workflow
 
+# Prompt/completion capture: default on. Set TRACELOOP_TRACE_CONTENT=false to disable.
+# Metrics enrichment: default on (e.g. token usage for streaming). Set TRACELOOP_ENRICH_TOKENS=false to disable.
 Traceloop.init(
     app_name=getenv("OTEL_SERVICE_NAME", "chatbot-service"),
     api_endpoint=getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector:4318"),
     disable_batch=getenv("OTEL_DISABLE_BATCH", "false").lower() == "true",
+    should_enrich_metrics=getenv("TRACELOOP_ENRICH_TOKENS", "true").lower() == "true",
 )
 
 from opentelemetry import trace
@@ -24,7 +29,7 @@ from opentelemetry import trace
 tracer = trace.get_tracer(getenv("OTEL_SERVICE_NAME", "chatbot-service"), "1.0.0")
 
 from openai import OpenAI
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -59,6 +64,7 @@ class ChatMessage(BaseModel):
 
 class ChatRequest(BaseModel):
     messages: list[ChatMessage]
+    category: str | None = None  # optional, e.g. "code_review", "general"
 
 
 class ChatResponse(BaseModel):
@@ -102,21 +108,48 @@ def build_prompt(context: list[str], messages: list[dict]) -> list[dict]:
     return [{"role": "system", "content": f"Context:\n{context_block}"}] + messages
 
 
-@workflow(name="chat_workflow")
-def _call_llm(messages: list[dict]) -> tuple[str, dict]:
-    """Single workflow span that wraps the LLM call for clearer traces. Returns (content, usage)."""
-    return _chat_completion(messages)
+@workflow(name="handle_chat")
+def handle_chat(query: str, messages: list[dict]) -> tuple[str, dict]:
+    """Workflow: retrieve context then generate response."""
+    context = retrieve_context(query)
+    return generate_response(context, messages)
+
+
+@task(name="retrieve_context")
+def retrieve_context(query: str) -> list[str]:
+    """Task: retrieve documents and set span attributes."""
+    span = trace.get_current_span()
+    span.set_attribute("retrieval.source", "elasticsearch")
+    context = retrieve_documents(query)
+    span.set_attribute("retrieval.num_results", len(context))
+    return context
+
+
+@task(name="generate_response")
+def generate_response(context: list[str], messages: list[dict]) -> tuple[str, dict]:
+    """Task: build prompt and call LLM."""
+    span = trace.get_current_span()
+    span.set_attribute("prompt.template", getenv("PROMPT_TEMPLATE", "rag_v2"))
+    final_messages = build_prompt(context, messages)
+    span.set_attribute("prompt.num_messages", len(final_messages))
+    return _chat_completion(final_messages)
 
 
 @task(name="chat_completion")
 def _chat_completion(messages: list[dict]) -> tuple[str, dict]:
     """LLM call as a task span; tool_calls are automatically traced by OpenLLMetry. Returns (content, usage)."""
+    start = time.perf_counter()
     response = client.chat.completions.create(
         model=getenv("OPENAI_MODEL", "gpt-4o-mini"),
         messages=messages,
         tools=TOOLS if getenv("CHATBOT_USE_TOOLS", "true").lower() == "true" else None,
         tool_choice="auto" if getenv("CHATBOT_USE_TOOLS", "true").lower() == "true" else None,
     )
+    latency_ms = int((time.perf_counter() - start) * 1000)
+    span = trace.get_current_span()
+    span.add_event("first_token_received", {"latency_ms": latency_ms})
+    span.add_event("stream_complete", {"total_chunks": 1})
+
     choice = response.choices[0]
     usage = {}
     if getattr(response, "usage", None) is not None:
@@ -132,31 +165,41 @@ def _chat_completion(messages: list[dict]) -> tuple[str, dict]:
     return choice.message.content or "", usage
 
 
+@tool(name="search_knowledge_base")
+def search_kb(query: str) -> str:
+    """Tool: search knowledge base (stub). Returns context as a single string for use in prompts or agents."""
+    docs = retrieve_documents(query)
+    return "\n\n".join(docs) if docs else ""
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
 
 @app.post("/api/chat", response_model=ChatResponse)
-def chat(req: ChatRequest):
+def chat(req: ChatRequest, request: Request):
     messages = [{"role": m.role, "content": m.content} for m in req.messages]
+    turn_number = sum(1 for m in messages if m.get("role") == "user")
+    session_id = request.headers.get("X-Session-ID") or str(uuid.uuid4())
+    prompt_category = req.category or "general"
+
+    span = trace.get_current_span()
+    span.set_attribute("user.session_id", session_id)
+    span.set_attribute("conversation.turn", turn_number)
+    span.set_attribute("prompt.category", prompt_category)
+
     query = ""
     for m in reversed(messages):
         if m.get("role") == "user":
             query = m.get("content", "")
             break
 
-    with tracer.start_as_current_span("retrieve_context") as span:
-        span.set_attribute("retrieval.source", "elasticsearch")
-        context = retrieve_documents(query)
-        span.set_attribute("retrieval.num_results", len(context))
+    reply, usage = handle_chat(query, messages)
 
-    with tracer.start_as_current_span("build_prompt") as span:
-        span.set_attribute("prompt.template", getenv("PROMPT_TEMPLATE", "rag_v2"))
-        final_messages = build_prompt(context, messages)
-        span.set_attribute("prompt.num_messages", len(final_messages))
+    span = trace.get_current_span()
+    span.set_attribute("response.quality_score", 0.0)  # placeholder; set from feedback when available
 
-    reply, usage = _call_llm(final_messages)
     return ChatResponse(
         message=reply,
         input_tokens=usage.get("input_tokens"),
