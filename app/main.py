@@ -60,6 +60,9 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     message: str
     role: str = "assistant"
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    total_tokens: int | None = None
 
 
 # Optional: tool definitions so tool_calls appear in traces
@@ -83,14 +86,14 @@ TOOLS = [
 
 
 @workflow(name="chat_workflow")
-def _call_llm(messages: list[dict]) -> str:
-    """Single workflow span that wraps the LLM call for clearer traces."""
+def _call_llm(messages: list[dict]) -> tuple[str, dict]:
+    """Single workflow span that wraps the LLM call for clearer traces. Returns (content, usage)."""
     return _chat_completion(messages)
 
 
 @task(name="chat_completion")
-def _chat_completion(messages: list[dict]) -> str:
-    """LLM call as a task span; tool_calls are automatically traced by OpenLLMetry."""
+def _chat_completion(messages: list[dict]) -> tuple[str, dict]:
+    """LLM call as a task span; tool_calls are automatically traced by OpenLLMetry. Returns (content, usage)."""
     response = client.chat.completions.create(
         model=getenv("OPENAI_MODEL", "gpt-4o-mini"),
         messages=messages,
@@ -98,10 +101,18 @@ def _chat_completion(messages: list[dict]) -> str:
         tool_choice="auto" if getenv("CHATBOT_USE_TOOLS", "true").lower() == "true" else None,
     )
     choice = response.choices[0]
+    usage = {}
+    if getattr(response, "usage", None) is not None:
+        u = response.usage
+        usage = {
+            "input_tokens": getattr(u, "prompt_tokens", None) or getattr(u, "input_tokens", None),
+            "output_tokens": getattr(u, "completion_tokens", None) or getattr(u, "output_tokens", None),
+            "total_tokens": getattr(u, "total_tokens", None),
+        }
     if choice.message.tool_calls:
-        # Optional: in a full implementation you could run tool calls and re-call the model
-        return choice.message.content or f"[Tool calls: {[t.function.name for t in choice.message.tool_calls]}]"
-    return choice.message.content or ""
+        content = choice.message.content or f"[Tool calls: {[t.function.name for t in choice.message.tool_calls]}]"
+        return content, usage
+    return choice.message.content or "", usage
 
 
 @app.get("/health")
@@ -112,8 +123,13 @@ def health():
 @app.post("/api/chat", response_model=ChatResponse)
 def chat(req: ChatRequest):
     messages = [{"role": m.role, "content": m.content} for m in req.messages]
-    reply = _call_llm(messages)
-    return ChatResponse(message=reply)
+    reply, usage = _call_llm(messages)
+    return ChatResponse(
+        message=reply,
+        input_tokens=usage.get("input_tokens"),
+        output_tokens=usage.get("output_tokens"),
+        total_tokens=usage.get("total_tokens"),
+    )
 
 
 @app.get("/")

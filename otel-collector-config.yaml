@@ -20,14 +20,14 @@ processors:
     attributes:
       - key: service.name
         action: upsert
-        value: ${OTEL_SERVICE_NAME:-chatbot-service}
+        value: ${OTEL_SERVICE_NAME}
 
 exporters:
   # Set ELASTIC_APM_SERVER_URL (e.g. https://your-cluster:8200). For auth set ELASTIC_APM_SECRET_TOKEN.
   otlp/apm:
     endpoint: ${ELASTIC_APM_SERVER_URL}
     tls:
-      insecure: ${ELASTIC_APM_INSECURE:-false}
+      insecure: ${ELASTIC_APM_INSECURE}
     compression: gzip
     headers:
       Authorization: "Bearer ${ELASTIC_APM_SECRET_TOKEN}"
