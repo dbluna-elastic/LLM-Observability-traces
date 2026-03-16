@@ -19,6 +19,10 @@ Traceloop.init(
     disable_batch=getenv("OTEL_DISABLE_BATCH", "false").lower() == "true",
 )
 
+from opentelemetry import trace
+
+tracer = trace.get_tracer(getenv("OTEL_SERVICE_NAME", "chatbot-service"), "1.0.0")
+
 from openai import OpenAI
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -85,6 +89,19 @@ TOOLS = [
 ]
 
 
+def retrieve_documents(query: str) -> list[str]:
+    """Stub: return empty list. Replace with real Elasticsearch/retrieval later."""
+    return []
+
+
+def build_prompt(context: list[str], messages: list[dict]) -> list[dict]:
+    """Build messages for the LLM. If context is non-empty, prepend a system message with it."""
+    if not context:
+        return messages
+    context_block = "\n\n".join(context)
+    return [{"role": "system", "content": f"Context:\n{context_block}"}] + messages
+
+
 @workflow(name="chat_workflow")
 def _call_llm(messages: list[dict]) -> tuple[str, dict]:
     """Single workflow span that wraps the LLM call for clearer traces. Returns (content, usage)."""
@@ -123,7 +140,23 @@ def health():
 @app.post("/api/chat", response_model=ChatResponse)
 def chat(req: ChatRequest):
     messages = [{"role": m.role, "content": m.content} for m in req.messages]
-    reply, usage = _call_llm(messages)
+    query = ""
+    for m in reversed(messages):
+        if m.get("role") == "user":
+            query = m.get("content", "")
+            break
+
+    with tracer.start_as_current_span("retrieve_context") as span:
+        span.set_attribute("retrieval.source", "elasticsearch")
+        context = retrieve_documents(query)
+        span.set_attribute("retrieval.num_results", len(context))
+
+    with tracer.start_as_current_span("build_prompt") as span:
+        span.set_attribute("prompt.template", getenv("PROMPT_TEMPLATE", "rag_v2"))
+        final_messages = build_prompt(context, messages)
+        span.set_attribute("prompt.num_messages", len(final_messages))
+
+    reply, usage = _call_llm(final_messages)
     return ChatResponse(
         message=reply,
         input_tokens=usage.get("input_tokens"),
