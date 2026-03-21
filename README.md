@@ -76,12 +76,16 @@ You can then remove or stop the `ollama` service in docker-compose if you don’
 | `ELASTIC_APM_INSECURE` | No | Set to `true` for self-signed or dev TLS (default: `false`) |
 | `OTEL_SERVICE_NAME` | No | Service name in Kibana (default: `chatbot-service`) |
 | `CHATBOT_USE_TOOLS` | No | Enable tool-call demo (default: `false` with Ollama; set `true` for OpenAI) |
+| `CHATBOT_SYSTEM_INSTRUCTION` | No | Override the default system prompt that steers the model to short answers (2–3 sentences). |
+
+Replies are steered to **short, concise** answers by default via a built-in system instruction; set `CHATBOT_SYSTEM_INSTRUCTION` to customize or tighten further.
 
 ## What gets traced
 
 - **Chat workflow**: each `/api/chat` request is a workflow; the LLM call is a child span.
 - **LLM spans**: provider (OpenAI), model, prompts/completions (if not disabled), token usage, latency.
 - **Tool calls**: when the model uses tools, those appear as part of the trace.
+- **[TRACING.md](TRACING.md)** – Diagram of tracing capabilities: service/OTLP flow, span hierarchy (workflow → tasks → agent_call → chat_completion, tools), and env vars.
 
 To avoid sending prompt/completion content to Elastic (e.g. in production), set:
 

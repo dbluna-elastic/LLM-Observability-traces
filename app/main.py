@@ -2,6 +2,7 @@
 Chatbot API with OpenLLMetry tracing to Elastic.
 Initialize Traceloop before any LLM client imports.
 """
+import json
 import logging
 import time
 import uuid
@@ -84,17 +85,42 @@ class ChatResponse(BaseModel):
     total_tokens: int | None = None
 
 
+# Global brevity instruction for every LLM call; override with CHATBOT_SYSTEM_INSTRUCTION in env.
+_DEFAULT_CHATBOT_SYSTEM_INSTRUCTION = (
+    "Answer in at most 2-3 short sentences unless the user asks for more detail. No long lists or essays."
+)
+
+
+def _chatbot_system_instruction() -> str:
+    custom = (getenv("CHATBOT_SYSTEM_INSTRUCTION") or "").strip()
+    return custom if custom else _DEFAULT_CHATBOT_SYSTEM_INSTRUCTION
+
+
+def _ensure_brevity_system_message(messages: list[dict]) -> list[dict]:
+    """Prepend global brevity instruction: merge into first system message or insert a system message at the front."""
+    instruction = _chatbot_system_instruction()
+    if not messages:
+        return [{"role": "system", "content": instruction}]
+    out = list(messages)
+    if out[0].get("role") == "system":
+        existing = (out[0].get("content") or "").strip()
+        merged = f"{instruction}\n\n{existing}" if existing else instruction
+        out[0] = {**out[0], "role": "system", "content": merged}
+        return out
+    return [{"role": "system", "content": instruction}] + out
+
+
 # Optional: tool definitions so tool_calls appear in traces
 TOOLS = [
     {
         "type": "function",
         "function": {
             "name": "get_current_weather",
-            "description": "Get the current weather in a given location",
+            "description": "Get the current weather in a given location (e.g. Texas, Houston TX, Austin)",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "location": {"type": "string", "description": "City and country, e.g. San Francisco, CA"},
+                    "location": {"type": "string", "description": "City and region, e.g. Texas, Houston TX, Austin"},
                     "unit": {"type": "string", "enum": ["celsius", "fahrenheit"], "description": "Temperature unit"},
                 },
                 "required": ["location"],
@@ -102,6 +128,72 @@ TOOLS = [
         },
     },
 ]
+
+
+@tool(name="get_current_weather")
+def get_current_weather(location: str, unit: str = "fahrenheit") -> str:
+    """Tool: return current weather for a location. Stub: returns Texas weather when location is in Texas."""
+    location_lower = (location or "").strip().lower()
+    if "texas" in location_lower or "tx" in location_lower or location_lower in ("austin", "houston", "dallas", "san antonio"):
+        temp_f = 88
+        temp_c = 31
+        conditions = "Sunny and warm"
+        if unit == "celsius":
+            return f"{conditions}, {temp_c}°C in Texas."
+        return f"{conditions}, {temp_f}°F in Texas."
+    if unit == "celsius":
+        return "Clear, 22°C."
+    return "Clear, 72°F."
+
+
+# Map tool names to callables for the agent loop
+TOOL_FUNCTIONS = {"get_current_weather": get_current_weather}
+
+
+def _parse_tool_arguments(raw_args) -> dict:
+    """Parse tool call arguments; handle string JSON, list (e.g. model returns schema), or dict."""
+    if isinstance(raw_args, dict):
+        return raw_args
+    if isinstance(raw_args, list) and raw_args and isinstance(raw_args[0], dict):
+        return raw_args[0]
+    if isinstance(raw_args, str):
+        try:
+            parsed = json.loads(raw_args)
+            if isinstance(parsed, dict):
+                return parsed
+            if isinstance(parsed, list) and parsed and isinstance(parsed[0], dict):
+                return parsed[0]
+        except json.JSONDecodeError:
+            pass
+    return {}
+
+
+def _looks_like_schema(obj: dict) -> bool:
+    """True if obj looks like a JSON schema (properties, required) rather than actual arguments."""
+    return bool(
+        obj.get("properties") or obj.get("required") or obj.get("propeties")  # common model typo
+        or (obj.get("type") == "object" and ("properties" in obj or "propeties" in obj))
+    )
+
+
+def _infer_weather_location(args: dict, messages: list[dict]) -> dict:
+    """When the model returns schema instead of args, infer location from the last user message."""
+    out = dict(args)
+    for msg in reversed(messages):
+        if msg.get("role") == "user":
+            content = (msg.get("content") or "").strip()
+            if content and ("weather" in content.lower() or "austin" in content.lower() or "texas" in content.lower()):
+                if "austin" in content.lower():
+                    out["location"] = "Austin, Texas"
+                elif "texas" in content.lower():
+                    out["location"] = "Texas"
+                else:
+                    out["location"] = content[:200]
+                break
+        if msg.get("role") == "assistant":
+            break
+    out.setdefault("location", "Texas")
+    return out
 
 
 def retrieve_documents(query: str) -> list[str]:
@@ -134,14 +226,10 @@ def get_user_preferences(name: str) -> dict:
 
 @task(name="personalize_prompt")
 def personalize_prompt(tool_result: dict, messages: list[dict]) -> list[dict]:
-    """Task: use name and preferences from the tool result to prepend a personalized system message."""
+    """Task: prepend a short personalized system line (name); global brevity rule is added in generate_response."""
     name = (tool_result.get("name") or "").strip()
     preferences = tool_result.get("preferences", "")
-    system_content = (
-        f"The user's name is {name}. When they ask for their name or how to be addressed, say their name is {name}. "
-        f"You are speaking to {name}. User preferences: {preferences}. "
-        "Keep responses concise and friendly."
-    )
+    system_content = f"User's name: {name}. Use their name when relevant. Preferences: {preferences}"
     out = [{"role": "system", "content": system_content}] + list(messages)
     # Inject name into the latest user message so the model sees it in-conversation (helps small models).
     if name:
@@ -174,14 +262,61 @@ def retrieve_context(query: str) -> list[str]:
     return context
 
 
+MAX_AGENT_TURNS = 10
+
+
+def run_agent(messages: list[dict]) -> tuple[str, dict]:
+    """Agent loop: call LLM with tools; when model returns tool_calls, execute tools and re-call until final answer (e.g. weather in Texas)."""
+    with tracer.start_as_current_span("agent_call") as span:
+        span.set_attribute("llm.agent", True)
+        messages_copy = list(messages)
+        total_usage: dict = {}
+        content = ""
+        for turn in range(MAX_AGENT_TURNS):
+            content, usage, assistant_msg = _chat_completion(messages_copy)
+            for k, v in (usage or {}).items():
+                if v is not None and isinstance(v, (int, float)):
+                    total_usage[k] = total_usage.get(k, 0) + v
+            if assistant_msg is None:
+                span.set_attribute("agent.turns", turn + 1)
+                return content, total_usage
+            messages_copy.append(assistant_msg)
+            tool_count = 0
+            for tc in assistant_msg.get("tool_calls", []):
+                tool_id = tc.get("id", "")
+                name = (tc.get("function") or {}).get("name", "")
+                raw_args = (tc.get("function") or {}).get("arguments", "{}")
+                if name not in TOOL_FUNCTIONS:
+                    messages_copy.append({"role": "tool", "tool_call_id": tool_id, "content": f"Unknown tool: {name}"})
+                    continue
+                args = _parse_tool_arguments(raw_args)
+                if name == "get_current_weather" and (not args.get("location") or _looks_like_schema(args)):
+                    args = _infer_weather_location(args, messages_copy)
+                kwargs = {k.lower(): v for k, v in args.items() if isinstance(v, (str, int, float, type(None)))}
+                if name == "get_current_weather":
+                    kwargs.setdefault("location", "")
+                    kwargs.setdefault("unit", "fahrenheit")
+                result = TOOL_FUNCTIONS[name](**kwargs)
+                messages_copy.append({"role": "tool", "tool_call_id": tool_id, "content": str(result)})
+                tool_count += 1
+            if tool_count:
+                span.add_event("tool_calls_executed", {"count": tool_count})
+        span.set_attribute("agent.turns", MAX_AGENT_TURNS)
+        return content or "Max agent turns reached.", total_usage
+
+
 @task(name="generate_response")
 def generate_response(context: list[str], messages: list[dict]) -> tuple[str, dict]:
-    """Task: build prompt and call LLM."""
+    """Task: build prompt and call LLM (or run agent when tools enabled)."""
     span = trace.get_current_span()
     span.set_attribute("prompt.template", getenv("PROMPT_TEMPLATE", "rag_v2"))
     final_messages = build_prompt(context, messages)
+    final_messages = _ensure_brevity_system_message(final_messages)
     span.set_attribute("prompt.num_messages", len(final_messages))
-    return _chat_completion(final_messages)
+    if getenv("CHATBOT_USE_TOOLS", "true").lower() == "true":
+        return run_agent(final_messages)
+    content, usage, _ = _chat_completion(final_messages)
+    return content, usage
 
 
 def _trace_headers() -> dict[str, str]:
@@ -198,9 +333,20 @@ def _litellm_extra_headers() -> dict[str, str] | None:
     return _trace_headers()
 
 
+def _message_to_dict(msg) -> dict:
+    """Build a message dict for the API from a ChatCompletionMessage (including tool_calls)."""
+    out: dict = {"role": msg.role, "content": msg.content or ""}
+    if getattr(msg, "tool_calls", None):
+        out["tool_calls"] = [
+            {"id": tc.id, "type": "function", "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
+            for tc in msg.tool_calls
+        ]
+    return out
+
+
 @task(name="chat_completion")
-def _chat_completion(messages: list[dict]) -> tuple[str, dict]:
-    """LLM call as a task span; tool_calls are automatically traced by OpenLLMetry. Returns (content, usage)."""
+def _chat_completion(messages: list[dict]) -> tuple[str, dict, dict | None]:
+    """LLM call as a task span; returns (content, usage, assistant_message_or_none). When tool_calls present, third is the assistant message to append for the agent loop."""
     start = time.perf_counter()
     kwargs: dict = {
         "model": getenv("OPENAI_MODEL", "gpt-4o-mini"),
@@ -227,9 +373,10 @@ def _chat_completion(messages: list[dict]) -> tuple[str, dict]:
             "total_tokens": getattr(u, "total_tokens", None),
         }
     if choice.message.tool_calls:
+        assistant_msg = _message_to_dict(choice.message)
         content = choice.message.content or f"[Tool calls: {[t.function.name for t in choice.message.tool_calls]}]"
-        return content, usage
-    return choice.message.content or "", usage
+        return content, usage, assistant_msg
+    return choice.message.content or "", usage, None
 
 
 @tool(name="search_knowledge_base")
