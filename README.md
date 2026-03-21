@@ -37,12 +37,16 @@ The stack uses **LiteLLM** as the app’s LLM endpoint by default. LiteLLM runs 
    ```
    The first time, the Ollama service will pull `tinyllama` (~600MB). Presidio and LiteLLM start automatically.
 
-3. **Open the app**
+3. **Presidio guardrails (LiteLLM)**
+
+   In [`litellm-config.yaml`](litellm-config.yaml), `presidio-pii` has **`default_on: true`**, so each prompt is run through Presidio (PII masked per `pii_entities_config`) before Ollama. Restart the **litellm** container after editing that file. Set `default_on: false` if you need to bypass the guardrail (e.g. local debugging).
+
+4. **Open the app**
 
    - App (chat UI): [http://localhost:8088](http://localhost:8088)
    - Health: [http://localhost:8088/health](http://localhost:8088/health)
 
-4. **View traces in Elastic**
+5. **View traces in Elastic**
 
    - Open Kibana → **Observability → APM → Services**
    - Select service `chatbot-service`

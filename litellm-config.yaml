@@ -18,7 +18,7 @@ guardrails:
     litellm_params:
       guardrail: presidio
       mode: pre_call
-      default_on: false
+      default_on: true  # Presidio on every request; set false to disable
       presidio_analyzer_api_base: "http://presidio-analyzer:5002"
       presidio_anonymizer_api_base: "http://presidio-anonymizer:5001"
       presidio_language: "en"
