@@ -87,7 +87,8 @@ class ChatResponse(BaseModel):
 
 # Global brevity instruction for every LLM call; override with CHATBOT_SYSTEM_INSTRUCTION in env.
 _DEFAULT_CHATBOT_SYSTEM_INSTRUCTION = (
-    "Answer in at most 2-3 short sentences unless the user asks for more detail. No long lists or essays."
+    "Answer in at most 2-3 short sentences unless the user asks for more detail. "
+    "Do not paste JSON, tool definitions, or API schemas—only plain sentences."
 )
 
 
@@ -196,6 +197,64 @@ def _infer_weather_location(args: dict, messages: list[dict]) -> dict:
     return out
 
 
+def _looks_like_raw_tool_schema_in_reply(text: str) -> bool:
+    """True when the model echoed tool/function JSON instead of a natural answer (common with small models)."""
+    t = (text or "").strip()
+    if len(t) < 40 or "get_current_weather" not in t:
+        return False
+    markers = (
+        '"type"',
+        "'type'",
+        "descripion",
+        "description",
+        '"function"',
+        "'function'",
+        '"enum"',
+        "City and region",
+        "fahrenheit",
+        "celsius",
+    )
+    return sum(1 for m in markers if m in t) >= 3
+
+
+def _user_asks_about_weather(messages: list[dict]) -> bool:
+    for msg in reversed(messages):
+        if msg.get("role") == "user":
+            c = (msg.get("content") or "").lower()
+            return bool(
+                "weather" in c
+                or "temperature" in c
+                or "forecast" in c
+                or "austin" in c
+                or "houston" in c
+                or "dallas" in c
+                or ("texas" in c and len(c) < 200)
+            )
+        if msg.get("role") == "assistant":
+            break
+    return False
+
+
+def _weather_reply_from_conversation(messages: list[dict]) -> str | None:
+    """Plain-text weather line when we can infer location from the chat."""
+    if not _user_asks_about_weather(messages):
+        return None
+    args = _infer_weather_location({}, messages)
+    loc = str(args.get("location") or "Texas")
+    unit = args.get("unit") if isinstance(args.get("unit"), str) else "fahrenheit"
+    return get_current_weather(loc, unit if unit in ("celsius", "fahrenheit") else "fahrenheit")
+
+
+def _sanitize_user_facing_reply(content: str, messages: list[dict]) -> str:
+    """Replace schema-dump replies with a readable sentence."""
+    if not _looks_like_raw_tool_schema_in_reply(content):
+        return (content or "").strip()
+    weather_line = _weather_reply_from_conversation(messages)
+    if weather_line:
+        return weather_line
+    return "I couldn’t format that clearly. Please ask again in one short sentence."
+
+
 def retrieve_documents(query: str) -> list[str]:
     """Stub: return empty list. Replace with real Elasticsearch/retrieval later."""
     return []
@@ -279,6 +338,7 @@ def run_agent(messages: list[dict]) -> tuple[str, dict]:
                     total_usage[k] = total_usage.get(k, 0) + v
             if assistant_msg is None:
                 span.set_attribute("agent.turns", turn + 1)
+                content = _sanitize_user_facing_reply(content, messages_copy)
                 return content, total_usage
             messages_copy.append(assistant_msg)
             tool_count = 0
@@ -296,12 +356,20 @@ def run_agent(messages: list[dict]) -> tuple[str, dict]:
                 if name == "get_current_weather":
                     kwargs.setdefault("location", "")
                     kwargs.setdefault("unit", "fahrenheit")
-                result = TOOL_FUNCTIONS[name](**kwargs)
+                    # Only pass location/unit—models often echo schema keys like "type" into args.
+                    loc = str(kwargs.get("location", ""))
+                    unit = kwargs.get("unit", "fahrenheit")
+                    if unit not in ("celsius", "fahrenheit"):
+                        unit = "fahrenheit"
+                    result = TOOL_FUNCTIONS[name](location=loc, unit=unit)
+                else:
+                    result = TOOL_FUNCTIONS[name](**kwargs)
                 messages_copy.append({"role": "tool", "tool_call_id": tool_id, "content": str(result)})
                 tool_count += 1
             if tool_count:
                 span.add_event("tool_calls_executed", {"count": tool_count})
         span.set_attribute("agent.turns", MAX_AGENT_TURNS)
+        content = _sanitize_user_facing_reply(content or "", messages_copy)
         return content or "Max agent turns reached.", total_usage
 
 
@@ -316,6 +384,7 @@ def generate_response(context: list[str], messages: list[dict]) -> tuple[str, di
     if getenv("CHATBOT_USE_TOOLS", "true").lower() == "true":
         return run_agent(final_messages)
     content, usage, _ = _chat_completion(final_messages)
+    content = _sanitize_user_facing_reply(content, final_messages)
     return content, usage
 
 
@@ -464,6 +533,13 @@ def chat(req: ChatRequest, request: Request):
 def index():
     index_path = Path(__file__).resolve().parent / "static" / "index.html"
     return FileResponse(index_path)
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon():
+    """Serve AI favicon (SVG) for browsers that request /favicon.ico."""
+    path = Path(__file__).resolve().parent / "static" / "favicon.svg"
+    return FileResponse(path, media_type="image/svg+xml")
 
 
 def main():
