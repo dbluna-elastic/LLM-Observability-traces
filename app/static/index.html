@@ -41,6 +41,13 @@
         radial-gradient(ellipse 60% 40% at 100% 100%, rgba(59, 130, 246, 0.08), transparent);
     }
 
+    .layout-body {
+      flex: 1;
+      display: flex;
+      min-height: 0;
+      width: 100%;
+    }
+
     header {
       padding: 1rem 1.5rem;
       border-bottom: 1px solid var(--border);
@@ -107,14 +114,148 @@
       font-family: 'JetBrains Mono', monospace;
     }
 
-    main {
-      flex: 1;
-      max-width: 720px;
-      width: 100%;
-      margin: 0 auto;
+    .chat-column {
+      flex: 1 1 50%;
+      min-width: 0;
+      width: 50%;
       padding: 1.5rem;
       display: flex;
       flex-direction: column;
+      border-right: 1px solid var(--border);
+    }
+
+    .traceflow-panel {
+      flex: 1 1 50%;
+      min-width: 0;
+      width: 50%;
+      border-left: none;
+      background: rgba(24, 24, 28, 0.85);
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+    }
+
+    .traceflow-header {
+      padding: 0.75rem 1rem;
+      font-size: 0.8rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--text-muted);
+      border-bottom: 1px solid var(--border);
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    .traceflow-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 0.5rem 0.65rem 1rem;
+    }
+
+    .traceflow-placeholder {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      padding: 0.75rem;
+      line-height: 1.5;
+    }
+
+    .tf-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      grid-template-rows: auto auto;
+      gap: 0.25rem 0.5rem;
+      align-items: center;
+      padding: 0.4rem 0.5rem;
+      margin-bottom: 2px;
+      border-radius: 8px;
+      background: rgba(15, 15, 18, 0.6);
+      border: 1px solid transparent;
+    }
+
+    .tf-row-main {
+      grid-column: 1;
+      grid-row: 1;
+      display: flex;
+      align-items: center;
+      gap: 0.35rem;
+      min-width: 0;
+    }
+
+    .tf-row.tf-depth-0 {
+      border-color: rgba(59, 130, 246, 0.35);
+    }
+
+    .tf-name {
+      font-size: 0.78rem;
+      font-weight: 500;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    .tf-kind {
+      font-size: 0.6rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      padding: 0.15rem 0.4rem;
+      border-radius: 4px;
+      flex-shrink: 0;
+    }
+
+    .tf-kind-workflow { background: rgba(59, 130, 246, 0.25); color: #93c5fd; }
+    .tf-kind-task { background: rgba(30, 64, 175, 0.35); color: #bfdbfe; }
+    .tf-kind-chat { background: rgba(22, 101, 52, 0.35); color: #86efac; }
+    .tf-kind-agent { background: rgba(120, 53, 15, 0.4); color: #fdba74; }
+    .tf-kind-tool { background: rgba(120, 53, 15, 0.4); color: #fdba74; }
+
+    .tf-dur {
+      grid-column: 2;
+      grid-row: 1;
+      font-size: 0.7rem;
+      color: var(--text-muted);
+      font-family: 'JetBrains Mono', monospace;
+      text-align: right;
+      align-self: center;
+    }
+
+    .tf-gantt {
+      grid-column: 1 / -1;
+      grid-row: 2;
+      height: 6px;
+      background: rgba(42, 42, 48, 0.9);
+      border-radius: 3px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .tf-gantt-fill {
+      position: absolute;
+      top: 0;
+      height: 100%;
+      border-radius: 3px;
+      background: linear-gradient(90deg, #22d3ee, #3b82f6);
+      opacity: 0.95;
+    }
+
+    @media (max-width: 860px) {
+      .layout-body {
+        flex-direction: column;
+      }
+      .chat-column {
+        flex: 1 1 auto;
+        width: 100%;
+        border-right: none;
+        border-bottom: 1px solid var(--border);
+      }
+      .traceflow-panel {
+        flex: 1 1 auto;
+        width: 100%;
+        min-height: 240px;
+        max-height: 40vh;
+        border-top: 1px solid var(--border);
+      }
     }
 
     #messages {
@@ -311,7 +452,8 @@
     </div>
   </header>
 
-  <main>
+  <div class="layout-body">
+  <main class="chat-column">
     <div id="messages"></div>
     <div class="form-wrap">
       <div class="run-tests-wrap">
@@ -335,6 +477,14 @@
     </div>
   </main>
 
+  <aside id="traceflowPanel" class="traceflow-panel" aria-label="Request trace timeline">
+    <div class="traceflow-header">Traceflow</div>
+    <div id="traceflowBody" class="traceflow-body">
+      <p class="traceflow-placeholder" id="traceflowPlaceholder">Send a message to see this request’s workflow, tasks, and LLM steps with timings.</p>
+    </div>
+  </aside>
+  </div>
+
   <script>
     const messagesEl = document.getElementById('messages');
     const form = document.getElementById('form');
@@ -343,6 +493,7 @@
     const errorEl = document.getElementById('error');
     const newChatBtn = document.getElementById('newChatBtn');
     const runTestsProgress = document.getElementById('runTestsProgress');
+    const traceflowBody = document.getElementById('traceflowBody');
 
     const API_BASE = '';
 
@@ -364,6 +515,98 @@
       input.value = '';
       input.style.height = 'auto';
       input.focus();
+      clearTraceflow();
+    }
+
+    function fmtDurationMs(ms) {
+      const n = Number(ms) || 0;
+      if (n >= 1000) return `${(n / 1000).toFixed(1)} s`;
+      return `${n.toFixed(0)} ms`;
+    }
+
+    function kindToClass(kind) {
+      const k = (kind || '').toUpperCase();
+      if (k === 'WORKFLOW') return 'tf-kind-workflow';
+      if (k === 'TASK') return 'tf-kind-task';
+      if (k === 'CHAT') return 'tf-kind-chat';
+      if (k === 'AGENT') return 'tf-kind-agent';
+      if (k === 'TOOL') return 'tf-kind-tool';
+      return 'tf-kind-task';
+    }
+
+    /** Pre-order rows with sequential sibling timeline (matches server execution order). */
+    function flattenTraceTree(node, depth, startMs, rows) {
+      if (!node) return;
+      rows.push({
+        name: node.name || '—',
+        kind: node.kind || 'TASK',
+        duration_ms: node.duration_ms ?? 0,
+        depth,
+        startMs,
+      });
+      let cursor = startMs;
+      const kids = node.children || [];
+      for (const c of kids) {
+        flattenTraceTree(c, depth + 1, cursor, rows);
+        cursor += c.duration_ms ?? 0;
+      }
+    }
+
+    function clearTraceflow() {
+      traceflowBody.innerHTML = '';
+      const p = document.createElement('p');
+      p.className = 'traceflow-placeholder';
+      p.id = 'traceflowPlaceholder';
+      p.textContent = 'Send a message to see this request’s workflow, tasks, and LLM steps with timings.';
+      traceflowBody.appendChild(p);
+    }
+
+    function renderTraceflow(tree) {
+      if (!tree || !tree.name) {
+        clearTraceflow();
+        return;
+      }
+      traceflowBody.innerHTML = '';
+      const total = Math.max(tree.duration_ms || 1, 1);
+      const rows = [];
+      flattenTraceTree(tree, 0, 0, rows);
+
+      for (const r of rows) {
+        const row = document.createElement('div');
+        row.className = `tf-row tf-depth-${r.depth}`;
+        row.style.marginLeft = `${r.depth * 12}px`;
+
+        const main = document.createElement('div');
+        main.className = 'tf-row-main';
+        const nameEl = document.createElement('span');
+        nameEl.className = 'tf-name';
+        nameEl.textContent = r.name;
+        nameEl.title = r.name;
+        const badge = document.createElement('span');
+        badge.className = `tf-kind ${kindToClass(r.kind)}`;
+        badge.textContent = r.kind;
+        main.appendChild(nameEl);
+        main.appendChild(badge);
+
+        const dur = document.createElement('span');
+        dur.className = 'tf-dur';
+        dur.textContent = fmtDurationMs(r.duration_ms);
+
+        const gantt = document.createElement('div');
+        gantt.className = 'tf-gantt';
+        const fill = document.createElement('div');
+        fill.className = 'tf-gantt-fill';
+        const leftPct = (r.startMs / total) * 100;
+        const wPct = Math.max((r.duration_ms / total) * 100, 0.5);
+        fill.style.left = `${leftPct}%`;
+        fill.style.width = `${wPct}%`;
+        gantt.appendChild(fill);
+
+        row.appendChild(main);
+        row.appendChild(dur);
+        row.appendChild(gantt);
+        traceflowBody.appendChild(row);
+      }
     }
 
     const TEST_QUESTIONS = [
@@ -438,6 +681,7 @@
 
         const data = await res.json();
         contentEl.textContent = data.message || '(No response)';
+        if (data.traceflow) renderTraceflow(data.traceflow);
         const total = data.total_tokens ?? (data.input_tokens != null && data.output_tokens != null ? data.input_tokens + data.output_tokens : null);
         if (total != null || data.input_tokens != null || data.output_tokens != null) {
           const parts = [];
@@ -493,6 +737,7 @@
           }
           const data = await res.json();
           contentEl.textContent = data.message || '(No response)';
+          if (data.traceflow) renderTraceflow(data.traceflow);
           const total = data.total_tokens ?? (data.input_tokens != null && data.output_tokens != null ? data.input_tokens + data.output_tokens : null);
           if (total != null || data.input_tokens != null || data.output_tokens != null) {
             const parts = [];

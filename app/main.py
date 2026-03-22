@@ -83,13 +83,16 @@ class ChatResponse(BaseModel):
     input_tokens: int | None = None
     output_tokens: int | None = None
     total_tokens: int | None = None
+    # Hierarchical trace for the Traceflow UI (OpenLLMetry-style names; timings from this request only).
+    traceflow: dict | None = None
+
+
+def _elapsed_ms(since: float) -> float:
+    return round((time.perf_counter() - since) * 1000, 1)
 
 
 # Global brevity instruction for every LLM call; override with CHATBOT_SYSTEM_INSTRUCTION in env.
-_DEFAULT_CHATBOT_SYSTEM_INSTRUCTION = (
-    "Answer in at most 2-3 short sentences unless the user asks for more detail. "
-    "Do not paste JSON, tool definitions, or API schemas—only plain sentences."
-)
+_DEFAULT_CHATBOT_SYSTEM_INSTRUCTION = "Keep answers brief unless the user asks for more detail."
 
 
 def _chatbot_system_instruction() -> str:
@@ -297,27 +300,61 @@ def get_user_preferences(name: str) -> dict:
 def personalize_prompt(tool_result: dict, messages: list[dict]) -> list[dict]:
     """Task: prepend a short personalized system line (name only); global brevity rule is added in generate_response."""
     name = (tool_result.get("name") or "").strip()
-    system_content = f"User's name: {name}. Use their name when relevant when addressing the user."
+    system_content = f"The user's name is {name}."
     out = [{"role": "system", "content": system_content}] + list(messages)
     # Inject name into the latest user message so the model sees it in-conversation (helps small models).
     if name:
         for i in range(len(out) - 1, -1, -1):
             if out[i].get("role") == "user":
                 content = out[i].get("content", "")
-                if content and not content.strip().lower().startswith("(the user's name is"):
-                    out[i] = {"role": "user", "content": f"(The user's name is {name}.)\n\n{content}"}
+                low = content.strip().lower()
+                if content and not (low.startswith("(name:") or low.startswith("(the user's name is")):
+                    out[i] = {"role": "user", "content": f"(Name: {name}.)\n\n{content}"}
                 break
     return out
 
 
 @workflow(name="handle_chat")
-def handle_chat(query: str, messages: list[dict], name: str | None = None) -> tuple[str, dict]:
+def handle_chat(
+    query: str,
+    messages: list[dict],
+    name: str | None = None,
+    trace_root: dict | None = None,
+) -> tuple[str, dict]:
     """Workflow: optional tool+task for name/personalization, then retrieve context and generate response."""
+    wf_start = time.perf_counter()
+    children: list | None = trace_root["children"] if trace_root else None
+
     if name and name.strip():
+        t0 = time.perf_counter()
         tool_result = get_user_preferences(name.strip())
+        if children is not None:
+            children.append(
+                {"name": "get_user_preferences", "kind": "TOOL", "duration_ms": _elapsed_ms(t0), "children": []}
+            )
+        t0 = time.perf_counter()
         messages = personalize_prompt(tool_result, messages)
+        if children is not None:
+            children.append({"name": "personalize_prompt", "kind": "TASK", "duration_ms": _elapsed_ms(t0), "children": []})
+
+    t0 = time.perf_counter()
     context = retrieve_context(query)
-    return generate_response(context, messages)
+    if children is not None:
+        children.append({"name": "retrieve_context", "kind": "TASK", "duration_ms": _elapsed_ms(t0), "children": []})
+
+    gen_children: list | None = [] if children is not None else None
+    gen_node: dict | None = None
+    if children is not None:
+        gen_node = {"name": "generate_response", "kind": "TASK", "duration_ms": 0.0, "children": gen_children}
+        children.append(gen_node)
+
+    t_gen = time.perf_counter()
+    reply, usage = generate_response(context, messages, trace_children=gen_children)
+    if gen_node is not None:
+        gen_node["duration_ms"] = _elapsed_ms(t_gen)
+    if trace_root is not None:
+        trace_root["duration_ms"] = _elapsed_ms(wf_start)
+    return reply, usage
 
 
 @task(name="retrieve_context")
@@ -333,21 +370,30 @@ def retrieve_context(query: str) -> list[str]:
 MAX_AGENT_TURNS = 10
 
 
-def run_agent(messages: list[dict]) -> tuple[str, dict]:
+def run_agent(messages: list[dict], trace_children: list | None = None) -> tuple[str, dict]:
     """Agent loop: call LLM with tools; when model returns tool_calls, execute tools and re-call until final answer (e.g. weather in Texas)."""
     with tracer.start_as_current_span("agent_call") as span:
         span.set_attribute("llm.agent", True)
+        agent_start = time.perf_counter()
+        inner: list | None = [] if trace_children is not None else None
+        agent_node: dict | None = None
+        if trace_children is not None:
+            agent_node = {"name": "agent_call", "kind": "AGENT", "duration_ms": 0.0, "children": inner}
+            trace_children.append(agent_node)
+
         messages_copy = list(messages)
         total_usage: dict = {}
         content = ""
         for turn in range(MAX_AGENT_TURNS):
-            content, usage, assistant_msg = _chat_completion(messages_copy)
+            content, usage, assistant_msg = _chat_completion(messages_copy, trace_children=inner)
             for k, v in (usage or {}).items():
                 if v is not None and isinstance(v, (int, float)):
                     total_usage[k] = total_usage.get(k, 0) + v
             if assistant_msg is None:
                 span.set_attribute("agent.turns", turn + 1)
                 content = _sanitize_user_facing_reply(content, messages_copy)
+                if agent_node is not None:
+                    agent_node["duration_ms"] = _elapsed_ms(agent_start)
                 return content, total_usage
             messages_copy.append(assistant_msg)
             tool_count = 0
@@ -362,6 +408,7 @@ def run_agent(messages: list[dict]) -> tuple[str, dict]:
                 if name == "get_current_weather" and (not args.get("location") or _looks_like_schema(args)):
                     args = _infer_weather_location(args, messages_copy)
                 kwargs = {k.lower(): v for k, v in args.items() if isinstance(v, (str, int, float, type(None)))}
+                t_tool = time.perf_counter()
                 if name == "get_current_weather":
                     kwargs.setdefault("location", "")
                     kwargs.setdefault("unit", "fahrenheit")
@@ -373,17 +420,27 @@ def run_agent(messages: list[dict]) -> tuple[str, dict]:
                     result = TOOL_FUNCTIONS[name](location=loc, unit=unit)
                 else:
                     result = TOOL_FUNCTIONS[name](**kwargs)
+                if inner is not None:
+                    inner.append(
+                        {"name": name or "tool", "kind": "TOOL", "duration_ms": _elapsed_ms(t_tool), "children": []}
+                    )
                 messages_copy.append({"role": "tool", "tool_call_id": tool_id, "content": str(result)})
                 tool_count += 1
             if tool_count:
                 span.add_event("tool_calls_executed", {"count": tool_count})
         span.set_attribute("agent.turns", MAX_AGENT_TURNS)
         content = _sanitize_user_facing_reply(content or "", messages_copy)
+        if agent_node is not None:
+            agent_node["duration_ms"] = _elapsed_ms(agent_start)
         return content or "Max agent turns reached.", total_usage
 
 
 @task(name="generate_response")
-def generate_response(context: list[str], messages: list[dict]) -> tuple[str, dict]:
+def generate_response(
+    context: list[str],
+    messages: list[dict],
+    trace_children: list | None = None,
+) -> tuple[str, dict]:
     """Task: build prompt and call LLM (or run agent when tools enabled)."""
     span = trace.get_current_span()
     span.set_attribute("prompt.template", getenv("PROMPT_TEMPLATE", "rag_v2"))
@@ -391,8 +448,8 @@ def generate_response(context: list[str], messages: list[dict]) -> tuple[str, di
     final_messages = _ensure_brevity_system_message(final_messages)
     span.set_attribute("prompt.num_messages", len(final_messages))
     if _chatbot_tools_enabled():
-        return run_agent(final_messages)
-    content, usage, _ = _chat_completion(final_messages)
+        return run_agent(final_messages, trace_children=trace_children)
+    content, usage, _ = _chat_completion(final_messages, trace_children=trace_children)
     content = _sanitize_user_facing_reply(content, final_messages)
     return content, usage
 
@@ -423,7 +480,10 @@ def _message_to_dict(msg) -> dict:
 
 
 @task(name="chat_completion")
-def _chat_completion(messages: list[dict]) -> tuple[str, dict, dict | None]:
+def _chat_completion(
+    messages: list[dict],
+    trace_children: list | None = None,
+) -> tuple[str, dict, dict | None]:
     """LLM call as a task span; returns (content, usage, assistant_message_or_none). When tool_calls present, third is the assistant message to append for the agent loop."""
     start = time.perf_counter()
     kwargs: dict = {
@@ -453,7 +513,15 @@ def _chat_completion(messages: list[dict]) -> tuple[str, dict, dict | None]:
     if choice.message.tool_calls:
         assistant_msg = _message_to_dict(choice.message)
         content = choice.message.content or f"[Tool calls: {[t.function.name for t in choice.message.tool_calls]}]"
+        if trace_children is not None:
+            trace_children.append(
+                {"name": "chat_completion", "kind": "CHAT", "duration_ms": _elapsed_ms(start), "children": []}
+            )
         return content, usage, assistant_msg
+    if trace_children is not None:
+        trace_children.append(
+            {"name": "chat_completion", "kind": "CHAT", "duration_ms": _elapsed_ms(start), "children": []}
+        )
     return choice.message.content or "", usage, None
 
 
@@ -551,8 +619,14 @@ def chat(req: ChatRequest, request: Request):
             break
 
     name = req.name or None
+    trace_root: dict = {
+        "name": "handle_chat",
+        "kind": "WORKFLOW",
+        "duration_ms": 0.0,
+        "children": [],
+    }
     try:
-        reply, usage = handle_chat(query, messages, name=name)
+        reply, usage = handle_chat(query, messages, name=name, trace_root=trace_root)
     except OpenAIAPIStatusError as e:
         if getattr(e, "status_code", None) == 400:
             return ChatResponse(
@@ -603,6 +677,7 @@ def chat(req: ChatRequest, request: Request):
         input_tokens=usage.get("input_tokens"),
         output_tokens=usage.get("output_tokens"),
         total_tokens=usage.get("total_tokens"),
+        traceflow=trace_root,
     )
 
 

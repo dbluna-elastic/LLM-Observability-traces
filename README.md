@@ -81,9 +81,9 @@ You can then remove or stop the `ollama` service in docker-compose if you don’
 | `ELASTIC_APM_INSECURE` | No | Set to `true` for self-signed or dev TLS (default: `false`) |
 | `OTEL_SERVICE_NAME` | No | Service name in Kibana (default: `chatbot-service`) |
 | `CHATBOT_USE_TOOLS` | No | Enable tool-call demo (default: `false` with Ollama; set `true` for OpenAI) |
-| `CHATBOT_SYSTEM_INSTRUCTION` | No | Override the default system prompt that steers the model to short answers (2–3 sentences). |
+| `CHATBOT_SYSTEM_INSTRUCTION` | No | Override the default system prompt (brief answers unless the user wants more). |
 
-Replies are steered to **short, concise** answers by default via a built-in system instruction; set `CHATBOT_SYSTEM_INSTRUCTION` to customize or tighten further.
+Replies default to **brief** answers via a built-in system instruction; set `CHATBOT_SYSTEM_INSTRUCTION` to override.
 
 ## What gets traced
 
