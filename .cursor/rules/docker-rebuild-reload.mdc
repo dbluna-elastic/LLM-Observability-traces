@@ -1,0 +1,47 @@
+---
+description: Rebuild and reload Docker when app or stack config changes
+alwaysApply: true
+---
+
+# Docker rebuild and reload
+
+When your edits affect what runs in containers, **finish by rebuilding and restarting** so the user can verify changes without a manual step.
+
+## App service (FastAPI + static UI)
+
+Run after changes to:
+
+- `app/` (Python, `static/`, templates)
+- `Dockerfile`
+- `requirements.txt`
+
+**Command** (from repo root):
+
+```bash
+docker compose up --build -d --force-recreate app
+```
+
+Use this when only the **app** image or its copied files changed. It is faster than recreating the whole stack.
+
+## Full stack
+
+Run after changes to:
+
+- `docker-compose.yaml` (services, env, `depends_on`, ports)
+- `litellm-config.yaml`
+- `otel-collector-config.yaml`
+
+**Command**:
+
+```bash
+docker compose up --build -d --force-recreate
+```
+
+## Skip rebuild
+
+- Docs-only: `README.md`, `*.md` in `docs/`, comments with no code change
+- Plan files under `.cursor/plans/` unless the user asks to run Docker
+
+## If unsure
+
+If the change could affect runtime behavior in Docker, **prefer** `docker compose up --build -d --force-recreate app` at minimum.
