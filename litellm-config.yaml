@@ -1,6 +1,6 @@
 # LiteLLM proxy: route to Ollama and run Presidio PII guardrail before each LLM call.
-# Presidio services must be running (presidio-analyzer:5002, presidio-anonymizer:5001).
-# Set PRESIDIO_ANALYZER_API_BASE and PRESIDIO_ANONYMIZER_API_BASE in the litellm service env.
+# Presidio listens on port 3000 inside Docker; use :3000 for service DNS (not host ports 5002/5001).
+# Set PRESIDIO_* in docker-compose to match.
 
 litellm_settings:
   callbacks: ["otel"]
@@ -19,8 +19,8 @@ guardrails:
       guardrail: presidio
       mode: pre_call
       default_on: true  # Presidio on every request; set false to disable
-      presidio_analyzer_api_base: "http://presidio-analyzer:5002"
-      presidio_anonymizer_api_base: "http://presidio-anonymizer:5001"
+      presidio_analyzer_api_base: "http://presidio-analyzer:3000"
+      presidio_anonymizer_api_base: "http://presidio-anonymizer:3000"
       presidio_language: "en"
       pii_entities_config:
         CREDIT_CARD: "MASK"

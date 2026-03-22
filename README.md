@@ -6,7 +6,7 @@ A small website with a chatbot running in Docker, instrumented with [OpenLLMetry
 
 - **App**: FastAPI backend + static chat UI. Calls the **LiteLLM proxy** (default) or Ollama/OpenAI directly. Traceloop SDK traces every LLM call.
 - **LiteLLM proxy**: OpenAI-compatible gateway on port 4000. Runs a **Presidio PII guardrail** (pre-call) so user prompts are checked before being sent to the LLM; blocks or masks sensitive data. Forwards allowed requests to Ollama.
-- **Presidio**: Two self-hosted services (analyzer on 5002, anonymizer on 5001) for PII detection and masking. No API key required.
+- **Presidio**: Two self-hosted services. **From your host**, analyzer is on **5002** and anonymizer on **5001** (mapped to port **3000** inside each container). **LiteLLM must call** `http://presidio-analyzer:3000` and `http://presidio-anonymizer:3000` on the Docker network—not the host-mapped ports.
 - **Ollama**: Local LLM service; runs **tinyllama** by default and pulls it on first start.
 - **OpenTelemetry Collector**: Receives OTLP from the app (and optionally from LiteLLM) and forwards traces to Elastic APM Server (8.x+ supports OTLP on port 8200).
 - **Elastic**: Your existing cluster with APM Server and Kibana. Traces show up under **Observability → APM → Services** as `chatbot-service` (or your `OTEL_SERVICE_NAME`).
@@ -73,8 +73,9 @@ You can then remove or stop the `ollama` service in docker-compose if you don’
 | `OPENAI_API_KEY` | For OpenAI | OpenAI API key. Use any value (e.g. `ollama`) when using Ollama or LiteLLM. |
 | `OPENAI_MODEL` | No | Model name: `tinyllama` for Ollama (default), or e.g. `gpt-4o-mini` for OpenAI. Must match a `model_name` in `litellm-config.yaml` when using LiteLLM. |
 | `OLLAMA_MODEL` | No | Model for Ollama to pull on first start (default: `tinyllama`). |
-| `PRESIDIO_ANALYZER_API_BASE` | No | Used by LiteLLM service (default in compose: `http://presidio-analyzer:5002`). |
-| `PRESIDIO_ANONYMIZER_API_BASE` | No | Used by LiteLLM service (default in compose: `http://presidio-anonymizer:5001`). |
+| `PRESIDIO_ANALYZER_API_BASE` | No | Used by LiteLLM (default in compose: `http://presidio-analyzer:3000`). |
+| `PRESIDIO_ANONYMIZER_API_BASE` | No | Used by LiteLLM (default in compose: `http://presidio-anonymizer:3000`). |
+| `DEBUG_LLM_ERRORS` | No | If `true`, the app appends a short debug snippet to chat error messages (local dev only). |
 | `ELASTIC_APM_SERVER_URL` | Yes | APM Server URL (e.g. `https://your-host:8200` or Elastic Cloud URL) |
 | `ELASTIC_APM_SECRET_TOKEN` | No | APM secret token for authenticated APM Server |
 | `ELASTIC_APM_INSECURE` | No | Set to `true` for self-signed or dev TLS (default: `false`) |

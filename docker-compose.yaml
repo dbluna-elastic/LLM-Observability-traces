@@ -14,7 +14,8 @@ services:
       - OTEL_SERVICE_NAME=${OTEL_SERVICE_NAME:-chatbot-service}
       - SERVICE_ENVIRONMENT=${SERVICE_ENVIRONMENT:-chatbot}
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
-      - CHATBOT_USE_TOOLS=${CHATBOT_USE_TOOLS:-true}
+      # Off by default: small models (tinyllama) echo tool JSON instead of answering; set true for GPT-class models.
+      - CHATBOT_USE_TOOLS=${CHATBOT_USE_TOOLS:-false}
       - CHATBOT_SYSTEM_INSTRUCTION=${CHATBOT_SYSTEM_INSTRUCTION:-}
     depends_on:
       otel-collector:
@@ -31,8 +32,9 @@ services:
     volumes:
       - ./litellm-config.yaml:/app/config.yaml:ro
     environment:
-      - PRESIDIO_ANALYZER_API_BASE=http://presidio-analyzer:5002
-      - PRESIDIO_ANONYMIZER_API_BASE=http://presidio-anonymizer:5001
+      # Container port 3000 (host maps 5002/5001 for local debugging only)
+      - PRESIDIO_ANALYZER_API_BASE=http://presidio-analyzer:3000
+      - PRESIDIO_ANONYMIZER_API_BASE=http://presidio-anonymizer:3000
       - OTEL_SERVICE_NAME=litellm-proxy
       - OTEL_DEBUG=True
       # OTLP trace export: Python SDK uses TRACES_ENDPOINT; collector HTTP receives on :4318/v1/traces

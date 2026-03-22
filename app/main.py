@@ -151,6 +151,11 @@ def get_current_weather(location: str, unit: str = "fahrenheit") -> str:
 TOOL_FUNCTIONS = {"get_current_weather": get_current_weather}
 
 
+def _chatbot_tools_enabled() -> bool:
+    """Tool-calling agent loop; use with capable models. Default off—tinyllama often dumps schema as text."""
+    return getenv("CHATBOT_USE_TOOLS", "false").lower() == "true"
+
+
 def _parse_tool_arguments(raw_args) -> dict:
     """Parse tool call arguments; handle string JSON, list (e.g. model returns schema), or dict."""
     if isinstance(raw_args, dict):
@@ -252,7 +257,15 @@ def _sanitize_user_facing_reply(content: str, messages: list[dict]) -> str:
     weather_line = _weather_reply_from_conversation(messages)
     if weather_line:
         return weather_line
-    return "I couldn’t format that clearly. Please ask again in one short sentence."
+    logger.warning(
+        "Model returned tool-schema-like text instead of a reply (often tinyllama with tools on). "
+        "Set CHATBOT_USE_TOOLS=false or use a stronger model."
+    )
+    return (
+        "The model replied with tool metadata instead of a normal answer—common with small local models when "
+        "tool-calling is enabled. Set CHATBOT_USE_TOOLS=false in .env or docker-compose, rebuild the app, "
+        "and try again. (Enable tools only for capable models like GPT-4.)"
+    )
 
 
 def retrieve_documents(query: str) -> list[str]:
@@ -276,19 +289,15 @@ def build_prompt(context: list[str], messages: list[dict]) -> list[dict]:
 
 @tool(name="get_user_preferences")
 def get_user_preferences(name: str) -> dict:
-    """Tool: return user preferences for the given name (stub). Returns dict with 'name' and 'preferences'."""
-    return {
-        "name": name,
-        "preferences": "Preferred language: English. Interests: general.",
-    }
+    """Tool: resolve the user's display name (stub). Only `name` is passed into the chat prompt."""
+    return {"name": name}
 
 
 @task(name="personalize_prompt")
 def personalize_prompt(tool_result: dict, messages: list[dict]) -> list[dict]:
-    """Task: prepend a short personalized system line (name); global brevity rule is added in generate_response."""
+    """Task: prepend a short personalized system line (name only); global brevity rule is added in generate_response."""
     name = (tool_result.get("name") or "").strip()
-    preferences = tool_result.get("preferences", "")
-    system_content = f"User's name: {name}. Use their name when relevant. Preferences: {preferences}"
+    system_content = f"User's name: {name}. Use their name when relevant when addressing the user."
     out = [{"role": "system", "content": system_content}] + list(messages)
     # Inject name into the latest user message so the model sees it in-conversation (helps small models).
     if name:
@@ -381,7 +390,7 @@ def generate_response(context: list[str], messages: list[dict]) -> tuple[str, di
     final_messages = build_prompt(context, messages)
     final_messages = _ensure_brevity_system_message(final_messages)
     span.set_attribute("prompt.num_messages", len(final_messages))
-    if getenv("CHATBOT_USE_TOOLS", "true").lower() == "true":
+    if _chatbot_tools_enabled():
         return run_agent(final_messages)
     content, usage, _ = _chat_completion(final_messages)
     content = _sanitize_user_facing_reply(content, final_messages)
@@ -420,8 +429,8 @@ def _chat_completion(messages: list[dict]) -> tuple[str, dict, dict | None]:
     kwargs: dict = {
         "model": getenv("OPENAI_MODEL", "gpt-4o-mini"),
         "messages": messages,
-        "tools": TOOLS if getenv("CHATBOT_USE_TOOLS", "true").lower() == "true" else None,
-        "tool_choice": "auto" if getenv("CHATBOT_USE_TOOLS", "true").lower() == "true" else None,
+        "tools": TOOLS if _chatbot_tools_enabled() else None,
+        "tool_choice": "auto" if _chatbot_tools_enabled() else None,
     }
     extra = _litellm_extra_headers()
     if extra:
@@ -460,6 +469,69 @@ def health():
     return {"status": "ok"}
 
 
+def _openai_error_detail_for_log(exc: OpenAIAPIError) -> str:
+    """Short text from OpenAI SDK error for server logs (truncate; avoid huge bodies)."""
+    resp = getattr(exc, "response", None)
+    if resp is not None:
+        text = getattr(resp, "text", None)
+        if text:
+            return text.strip()[:800]
+    body = getattr(exc, "body", None)
+    if body is not None:
+        if isinstance(body, str):
+            return body.strip()[:800]
+        return str(body)[:800]
+    return str(exc)[:800]
+
+
+def _log_llm_upstream_error(exc: BaseException, where: str) -> None:
+    if isinstance(exc, OpenAIAPIStatusError):
+        code = getattr(exc, "status_code", None)
+        logger.warning("LLM upstream error [%s]: HTTP %s %s", where, code, _openai_error_detail_for_log(exc))
+    elif isinstance(exc, OpenAIAPIError):
+        logger.warning("LLM API error [%s]: %s", where, _openai_error_detail_for_log(exc))
+    elif isinstance(exc, OpenAIAPIConnectionError):
+        logger.warning("LLM connection error [%s]: %s", where, exc)
+
+
+def _user_message_for_status_error(exc: OpenAIAPIStatusError) -> str:
+    code = getattr(exc, "status_code", None) or 0
+    detail = _openai_error_detail_for_log(exc).lower()
+    if code == 429:
+        return "The language model is rate-limited. Please wait a moment and try again."
+    if code == 503:
+        return "The language model is busy. Please try again in a few seconds."
+    if "presidio" in detail or ("pii" in detail and "analysis" in detail):
+        return (
+            "Our PII safety check is temporarily unavailable. Please try again shortly. "
+            "If this continues, verify Presidio services are reachable from LiteLLM (container port 3000)."
+        )
+    return "The language model is temporarily unavailable. Please try again later."
+
+
+def _user_message_for_api_error(exc: OpenAIAPIError) -> str:
+    detail = _openai_error_detail_for_log(exc).lower()
+    if "presidio" in detail or ("pii" in detail and "failed" in detail):
+        return (
+            "Our PII safety check is temporarily unavailable. Please try again shortly. "
+            "If this continues, verify Presidio services are reachable from LiteLLM (container port 3000)."
+        )
+    return "The language model is temporarily unavailable. Please try again later."
+
+
+def _debug_llm_error_suffix(exc: BaseException) -> str:
+    if getenv("DEBUG_LLM_ERRORS", "").lower() not in ("1", "true", "yes"):
+        return ""
+    try:
+        if isinstance(exc, OpenAIAPIStatusError):
+            return f" [debug HTTP {getattr(exc, 'status_code', '?')} {_openai_error_detail_for_log(exc)[:180]}]"
+        if isinstance(exc, OpenAIAPIError):
+            return f" [debug {_openai_error_detail_for_log(exc)[:180]}]"
+        return f" [debug {str(exc)[:180]}]"
+    except Exception:
+        return ""
+
+
 @app.post("/api/chat", response_model=ChatResponse)
 def chat(req: ChatRequest, request: Request):
     messages = [{"role": m.role, "content": m.content} for m in req.messages]
@@ -489,22 +561,27 @@ def chat(req: ChatRequest, request: Request):
                 output_tokens=None,
                 total_tokens=None,
             )
+        _log_llm_upstream_error(e, "chat")
+        msg = _user_message_for_status_error(e) + _debug_llm_error_suffix(e)
         return ChatResponse(
-            message="The language model is temporarily unavailable. Please try again later.",
+            message=msg,
             input_tokens=None,
             output_tokens=None,
             total_tokens=None,
         )
-    except OpenAIAPIConnectionError:
+    except OpenAIAPIConnectionError as e:
+        _log_llm_upstream_error(e, "chat")
         return ChatResponse(
-            message="Cannot reach the language model. Please try again later.",
+            message="Cannot reach the language model. Please try again later." + _debug_llm_error_suffix(e),
             input_tokens=None,
             output_tokens=None,
             total_tokens=None,
         )
-    except OpenAIAPIError:
+    except OpenAIAPIError as e:
+        _log_llm_upstream_error(e, "chat")
+        msg = _user_message_for_api_error(e) + _debug_llm_error_suffix(e)
         return ChatResponse(
-            message="The language model is temporarily unavailable. Please try again later.",
+            message=msg,
             input_tokens=None,
             output_tokens=None,
             total_tokens=None,

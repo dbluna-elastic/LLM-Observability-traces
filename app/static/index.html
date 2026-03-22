@@ -67,6 +67,36 @@
       margin: 0;
     }
 
+    .header-actions {
+      margin-left: auto;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    #newChatBtn {
+      padding: 0.45rem 0.85rem;
+      font-family: inherit;
+      font-size: 0.85rem;
+      font-weight: 500;
+      color: var(--text);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      cursor: pointer;
+      transition: color 0.2s, border-color 0.2s, background 0.2s;
+    }
+
+    #newChatBtn:hover:not(:disabled) {
+      border-color: var(--accent);
+      background: rgba(124, 58, 237, 0.12);
+    }
+
+    #newChatBtn:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
     .badge {
       font-size: 0.7rem;
       padding: 0.2rem 0.5rem;
@@ -75,7 +105,6 @@
       border-radius: 6px;
       color: var(--text-muted);
       font-family: 'JetBrains Mono', monospace;
-      margin-left: auto;
     }
 
     main {
@@ -276,7 +305,10 @@
   <header>
     <div class="logo">AI</div>
     <h1>Chatbot</h1>
-    <span class="badge">OpenLLMetry → Elastic</span>
+    <div class="header-actions">
+      <button type="button" id="newChatBtn" title="Clear messages and start a fresh conversation">New chat</button>
+      <span class="badge">OpenLLMetry → Elastic</span>
+    </div>
   </header>
 
   <main>
@@ -309,8 +341,30 @@
     const input = document.getElementById('input');
     const submitBtn = document.getElementById('submit');
     const errorEl = document.getElementById('error');
+    const newChatBtn = document.getElementById('newChatBtn');
+    const runTestsProgress = document.getElementById('runTestsProgress');
 
     const API_BASE = '';
+
+    /** One ID per conversation for server tracing (see X-Session-ID in FastAPI). */
+    let chatSessionId = crypto.randomUUID();
+
+    function newChatHeaders() {
+      return {
+        'Content-Type': 'application/json',
+        'X-Session-ID': chatSessionId,
+      };
+    }
+
+    function startNewChat() {
+      chatSessionId = crypto.randomUUID();
+      messagesEl.innerHTML = '';
+      setError('');
+      runTestsProgress.textContent = '';
+      input.value = '';
+      input.style.height = 'auto';
+      input.focus();
+    }
 
     const TEST_QUESTIONS = [
       { id: 1, name: 'No-Letter Constraint (Instruction Following)', question: "Write a 50-word summary of the plot of The Matrix without using the letter 'e'." },
@@ -355,6 +409,7 @@
       const userMsg = addMessage('user', text);
       input.value = '';
       submitBtn.disabled = true;
+      newChatBtn.disabled = true;
       setError('');
 
       const assistantDiv = addMessage('assistant', '…', true);
@@ -369,7 +424,7 @@
         const nameValue = document.getElementById('nameInput').value.trim() || undefined;
         const res = await fetch(`${API_BASE}/api/chat`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: newChatHeaders(),
           body: JSON.stringify({
             messages: messages.map(m => ({ role: m.role, content: m.content })),
             name: nameValue
@@ -403,14 +458,20 @@
       }
 
       submitBtn.disabled = false;
+      newChatBtn.disabled = false;
     });
 
     // Run test questions button
     const runTestsBtn = document.getElementById('runTestsBtn');
-    const runTestsProgress = document.getElementById('runTestsProgress');
+
+    newChatBtn.addEventListener('click', () => {
+      if (runTestsBtn.disabled) return;
+      startNewChat();
+    });
 
     runTestsBtn.addEventListener('click', async () => {
       runTestsBtn.disabled = true;
+      newChatBtn.disabled = true;
       submitBtn.disabled = true;
       setError('');
       for (let i = 0; i < TEST_QUESTIONS.length; i++) {
@@ -423,7 +484,7 @@
           const nameValue = document.getElementById('nameInput').value.trim() || undefined;
           const res = await fetch(`${API_BASE}/api/chat`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: newChatHeaders(),
             body: JSON.stringify({ messages: [{ role: 'user', content: q.question }], name: nameValue })
           });
           if (!res.ok) {
@@ -453,6 +514,7 @@
       }
       runTestsProgress.textContent = 'Done. ' + TEST_QUESTIONS.length + ' questions run.';
       runTestsBtn.disabled = false;
+      newChatBtn.disabled = false;
       submitBtn.disabled = false;
     });
 

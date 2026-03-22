@@ -68,7 +68,7 @@ flowchart TB
 
 - **handle_chat**: One workflow per chat request; root of the trace.
 - **get_user_preferences** (tool): Optional; runs when the request includes a `name` for personalization.
-- **personalize_prompt** (task): Optional; builds a personalized system message from preferences.
+- **personalize_prompt** (task): Optional; builds a short system line from the resolved **name** only (no preference blob).
 - **retrieve_context** (task): RAG-style retrieval (stub); adds context to the prompt.
 - **generate_response** (task): Builds the final prompt and either runs the agent or a single LLM call.
 - **agent_call** (span): Explicit OpenTelemetry span that wraps the agent loop when `CHATBOT_USE_TOOLS=true`.
@@ -95,7 +95,7 @@ When **PROPAGATE_TRACE_TO_LITELLM=true**, the same trace in Elastic also include
 | Variable                    | Effect |
 |----------------------------|--------|
 | `PROPAGATE_TRACE_TO_LITELLM` | `true` → app sends traceparent to LiteLLM so proxy spans are in the same trace. |
-| `CHATBOT_USE_TOOLS`        | `true` → agent loop runs; you see `agent_call` and tool spans (e.g. `get_current_weather`). |
+| `CHATBOT_USE_TOOLS`        | `true` → agent loop runs; you see `agent_call` and tool spans (e.g. `get_current_weather`). Default in compose is `false` (better for tinyllama). |
 | `TRACELOOP_TRACE_CONTENT`  | `false` → prompt/completion content not sent to Elastic. |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` (app) | Where the app sends OTLP (default: collector :4318). |
 | `OTEL_TRACES_EXPORTER`, `OTEL_EXPORTER_OTLP_*` (LiteLLM) | LiteLLM OTLP export to the same collector. |
