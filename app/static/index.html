@@ -115,59 +115,91 @@
     }
 
     .chat-column {
-      flex: 1 1 50%;
+      flex: 1;
       min-width: 0;
-      width: 50%;
-      padding: 1.5rem;
+      width: 100%;
+      max-width: min(1680px, 100%);
+      margin: 0 auto;
+      padding: clamp(1.25rem, 2.5vw, 2.25rem) clamp(1rem, 3vw, 2.5rem);
       display: flex;
       flex-direction: column;
-      border-right: 1px solid var(--border);
     }
 
-    .traceflow-panel {
+    /* One row per reply: assistant message (left) + trace for that request (right) */
+    .turn-with-trace {
+      display: flex;
+      flex-direction: row;
+      align-items: flex-start;
+      gap: clamp(0.75rem, 2vw, 1.5rem);
+      width: 100%;
+    }
+
+    .turn-with-trace .msg.assistant {
       flex: 1 1 50%;
       min-width: 0;
-      width: 50%;
-      border-left: none;
+      max-width: 50%;
+      align-self: flex-start;
+    }
+
+    .traceflow-inline {
+      flex: 1 1 50%;
+      min-width: 0;
       background: rgba(24, 24, 28, 0.85);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
       display: flex;
       flex-direction: column;
-      min-height: 0;
+      overflow: visible;
     }
 
-    .traceflow-header {
-      padding: 0.75rem 1rem;
-      font-size: 0.8rem;
+    .traceflow-inline-header {
+      padding: 0.5rem 0.85rem;
+      font-size: 0.75rem;
       font-weight: 600;
       text-transform: uppercase;
       letter-spacing: 0.06em;
       color: var(--text-muted);
       border-bottom: 1px solid var(--border);
       font-family: 'JetBrains Mono', monospace;
+      flex-shrink: 0;
     }
 
-    .traceflow-body {
-      flex: 1;
-      overflow-y: auto;
-      padding: 0.5rem 0.65rem 1rem;
+    /* Full trace visible — no inner scroll; page scrolls via #messages */
+    .traceflow-inline-body {
+      flex: none;
+      overflow: visible;
+      padding: 0.6rem 0.75rem 0.85rem;
+    }
+
+    .traceflow-inline-body .tf-name {
+      font-size: 0.88rem;
+      white-space: normal;
+      overflow: visible;
+      text-overflow: unset;
+      line-height: 1.35;
+    }
+
+    .traceflow-inline-body .tf-kind {
+      font-size: 0.65rem;
+      padding: 0.18rem 0.45rem;
     }
 
     .traceflow-placeholder {
-      font-size: 0.85rem;
+      font-size: 0.95rem;
       color: var(--text-muted);
-      padding: 0.75rem;
-      line-height: 1.5;
+      padding: 0.85rem;
+      line-height: 1.55;
     }
 
     .tf-row {
       display: grid;
       grid-template-columns: minmax(0, 1fr) auto;
       grid-template-rows: auto auto;
-      gap: 0.25rem 0.5rem;
+      gap: 0.35rem 0.65rem;
       align-items: center;
-      padding: 0.4rem 0.5rem;
-      margin-bottom: 2px;
-      border-radius: 8px;
+      padding: 0.55rem 0.65rem;
+      margin-bottom: 4px;
+      border-radius: 10px;
       background: rgba(15, 15, 18, 0.6);
       border: 1px solid transparent;
     }
@@ -176,9 +208,30 @@
       grid-column: 1;
       grid-row: 1;
       display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 0.25rem;
+      min-width: 0;
+    }
+
+    .tf-title-line {
+      display: flex;
       align-items: center;
       gap: 0.35rem;
+      flex-wrap: wrap;
       min-width: 0;
+      width: 100%;
+    }
+
+    .tf-context {
+      font-size: 0.8rem;
+      line-height: 1.45;
+      color: var(--text-muted);
+      font-family: 'JetBrains Mono', monospace;
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-width: 100%;
+      padding-left: 0.05rem;
     }
 
     .tf-row.tf-depth-0 {
@@ -186,7 +239,7 @@
     }
 
     .tf-name {
-      font-size: 0.78rem;
+      font-size: 0.85rem;
       font-weight: 500;
       white-space: nowrap;
       overflow: hidden;
@@ -195,12 +248,12 @@
     }
 
     .tf-kind {
-      font-size: 0.6rem;
+      font-size: 0.65rem;
       font-weight: 600;
       text-transform: uppercase;
       letter-spacing: 0.04em;
-      padding: 0.15rem 0.4rem;
-      border-radius: 4px;
+      padding: 0.18rem 0.45rem;
+      border-radius: 5px;
       flex-shrink: 0;
     }
 
@@ -209,11 +262,12 @@
     .tf-kind-chat { background: rgba(22, 101, 52, 0.35); color: #86efac; }
     .tf-kind-agent { background: rgba(120, 53, 15, 0.4); color: #fdba74; }
     .tf-kind-tool { background: rgba(120, 53, 15, 0.4); color: #fdba74; }
+    .tf-kind-guardrail { background: rgba(107, 33, 168, 0.35); color: #e9d5ff; }
 
     .tf-dur {
       grid-column: 2;
       grid-row: 1;
-      font-size: 0.7rem;
+      font-size: 0.8rem;
       color: var(--text-muted);
       font-family: 'JetBrains Mono', monospace;
       text-align: right;
@@ -223,7 +277,7 @@
     .tf-gantt {
       grid-column: 1 / -1;
       grid-row: 2;
-      height: 6px;
+      height: 8px;
       background: rgba(42, 42, 48, 0.9);
       border-radius: 3px;
       position: relative;
@@ -240,21 +294,15 @@
     }
 
     @media (max-width: 860px) {
-      .layout-body {
+      .turn-with-trace {
         flex-direction: column;
       }
-      .chat-column {
-        flex: 1 1 auto;
+      .turn-with-trace .msg.assistant {
+        max-width: 100%;
         width: 100%;
-        border-right: none;
-        border-bottom: 1px solid var(--border);
       }
-      .traceflow-panel {
-        flex: 1 1 auto;
+      .traceflow-inline {
         width: 100%;
-        min-height: 240px;
-        max-height: 40vh;
-        border-top: 1px solid var(--border);
       }
     }
 
@@ -263,16 +311,17 @@
       overflow-y: auto;
       display: flex;
       flex-direction: column;
-      gap: 1rem;
+      gap: 1.15rem;
       padding-bottom: 1rem;
     }
 
     .msg {
-      max-width: 85%;
-      padding: 0.875rem 1rem;
+      max-width: 92%;
+      padding: 1rem 1.15rem;
       border-radius: var(--radius);
-      line-height: 1.5;
+      line-height: 1.55;
       box-shadow: var(--shadow);
+      font-size: 1.05rem;
     }
 
     .msg.user {
@@ -288,11 +337,11 @@
     }
 
     .msg .role {
-      font-size: 0.7rem;
+      font-size: 0.75rem;
       text-transform: uppercase;
       letter-spacing: 0.05em;
       color: var(--text-muted);
-      margin-bottom: 0.35rem;
+      margin-bottom: 0.4rem;
     }
 
     .msg.user .role { color: rgba(255,255,255,0.8); }
@@ -303,9 +352,9 @@
     }
 
     .msg .tokens {
-      font-size: 0.7rem;
+      font-size: 0.8rem;
       color: var(--text-muted);
-      margin-top: 0.5rem;
+      margin-top: 0.55rem;
       font-family: 'JetBrains Mono', monospace;
     }
 
@@ -324,11 +373,11 @@
 
     #input {
       flex: 1;
-      min-height: 48px;
-      max-height: 160px;
-      padding: 0.75rem 1rem;
+      min-height: 52px;
+      max-height: 180px;
+      padding: 0.85rem 1.1rem;
       font-family: inherit;
-      font-size: 1rem;
+      font-size: 1.05rem;
       color: var(--text);
       background: var(--surface);
       border: 1px solid var(--border);
@@ -348,7 +397,7 @@
     }
 
     button[type="submit"] {
-      height: 48px;
+      height: 52px;
       padding: 0 1.25rem;
       font-family: inherit;
       font-size: 0.95rem;
@@ -428,9 +477,9 @@
 
     #nameInput {
       width: 100%;
-      padding: 0.5rem 0.75rem;
+      padding: 0.55rem 0.85rem;
       font-family: inherit;
-      font-size: 0.95rem;
+      font-size: 1.02rem;
       color: var(--text);
       background: var(--surface);
       border: 1px solid var(--border);
@@ -454,7 +503,7 @@
 
   <div class="layout-body">
   <main class="chat-column">
-    <div id="messages"></div>
+    <div id="messages" aria-label="Chat messages and traces"></div>
     <div class="form-wrap">
       <div class="run-tests-wrap">
         <button type="button" id="runTestsBtn">Run test questions</button>
@@ -476,13 +525,6 @@
       <div id="error" class="error" aria-live="polite"></div>
     </div>
   </main>
-
-  <aside id="traceflowPanel" class="traceflow-panel" aria-label="Request trace timeline">
-    <div class="traceflow-header">Traceflow</div>
-    <div id="traceflowBody" class="traceflow-body">
-      <p class="traceflow-placeholder" id="traceflowPlaceholder">Send a message to see this request’s workflow, tasks, and LLM steps with timings.</p>
-    </div>
-  </aside>
   </div>
 
   <script>
@@ -493,7 +535,6 @@
     const errorEl = document.getElementById('error');
     const newChatBtn = document.getElementById('newChatBtn');
     const runTestsProgress = document.getElementById('runTestsProgress');
-    const traceflowBody = document.getElementById('traceflowBody');
 
     const API_BASE = '';
 
@@ -515,7 +556,59 @@
       input.value = '';
       input.style.height = 'auto';
       input.focus();
-      clearTraceflow();
+    }
+
+    /** Build API message list from #messages (user bubbles + completed assistant turns only). */
+    function collectMessagesForApi() {
+      const messages = [];
+      for (const el of messagesEl.children) {
+        if (el.classList.contains('msg') && el.classList.contains('user')) {
+          messages.push({ role: 'user', content: el.querySelector('.content').textContent });
+        } else if (el.classList.contains('turn-with-trace')) {
+          const am = el.querySelector('.msg.assistant');
+          if (am && !am.classList.contains('typing')) {
+            messages.push({ role: 'assistant', content: am.querySelector('.content').textContent });
+          }
+        }
+      }
+      return messages;
+    }
+
+    /** Assistant message + inline trace column for this reply. */
+    function addAssistantTurnWithTrace(isTyping = true) {
+      const wrap = document.createElement('div');
+      wrap.className = 'turn-with-trace';
+
+      const assistantDiv = document.createElement('div');
+      assistantDiv.className = `msg assistant${isTyping ? ' typing' : ''}`;
+      assistantDiv.innerHTML = `<div class="role">assistant</div><div class="content">${escapeHtml(isTyping ? '…' : '')}</div>`;
+
+      const traceCol = document.createElement('div');
+      traceCol.className = 'traceflow-inline';
+      traceCol.setAttribute('aria-label', 'Trace for this reply');
+      const traceHead = document.createElement('div');
+      traceHead.className = 'traceflow-inline-header';
+      traceHead.textContent = 'Traceflow';
+      const traceBody = document.createElement('div');
+      traceBody.className = 'traceflow-inline-body';
+      const ph = document.createElement('p');
+      ph.className = 'traceflow-placeholder';
+      ph.textContent = isTyping ? 'Waiting for response…' : 'No trace data.';
+      traceBody.appendChild(ph);
+
+      traceCol.appendChild(traceHead);
+      traceCol.appendChild(traceBody);
+      wrap.appendChild(assistantDiv);
+      wrap.appendChild(traceCol);
+      messagesEl.appendChild(wrap);
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+
+      return {
+        wrap,
+        assistantDiv,
+        contentEl: assistantDiv.querySelector('.content'),
+        traceBodyEl: traceBody,
+      };
     }
 
     function fmtDurationMs(ms) {
@@ -531,7 +624,14 @@
       if (k === 'CHAT') return 'tf-kind-chat';
       if (k === 'AGENT') return 'tf-kind-agent';
       if (k === 'TOOL') return 'tf-kind-tool';
+      if (k === 'GUARDRAIL') return 'tf-kind-guardrail';
       return 'tf-kind-task';
+    }
+
+    function formatStepDuration(kind, ms) {
+      const k = (kind || '').toUpperCase();
+      if (k === 'GUARDRAIL' && (!ms || ms === 0)) return 'pre-call';
+      return fmtDurationMs(ms);
     }
 
     /** Pre-order rows with sequential sibling timeline (matches server execution order). */
@@ -543,6 +643,8 @@
         duration_ms: node.duration_ms ?? 0,
         depth,
         startMs,
+        detail: node.detail || '',
+        context: node.context || '',
       });
       let cursor = startMs;
       const kids = node.children || [];
@@ -552,21 +654,15 @@
       }
     }
 
-    function clearTraceflow() {
-      traceflowBody.innerHTML = '';
-      const p = document.createElement('p');
-      p.className = 'traceflow-placeholder';
-      p.id = 'traceflowPlaceholder';
-      p.textContent = 'Send a message to see this request’s workflow, tasks, and LLM steps with timings.';
-      traceflowBody.appendChild(p);
-    }
-
-    function renderTraceflow(tree) {
+    function renderTraceflowInto(traceBodyEl, tree) {
+      traceBodyEl.innerHTML = '';
       if (!tree || !tree.name) {
-        clearTraceflow();
+        const p = document.createElement('p');
+        p.className = 'traceflow-placeholder';
+        p.textContent = 'No trace data for this reply.';
+        traceBodyEl.appendChild(p);
         return;
       }
-      traceflowBody.innerHTML = '';
       const total = Math.max(tree.duration_ms || 1, 1);
       const rows = [];
       flattenTraceTree(tree, 0, 0, rows);
@@ -574,38 +670,55 @@
       for (const r of rows) {
         const row = document.createElement('div');
         row.className = `tf-row tf-depth-${r.depth}`;
-        row.style.marginLeft = `${r.depth * 12}px`;
+        row.style.marginLeft = `${r.depth * 10}px`;
+        const tip = [r.detail, r.context].filter(Boolean).join('\n\n');
+        if (tip) row.title = tip;
 
         const main = document.createElement('div');
         main.className = 'tf-row-main';
+        const titleLine = document.createElement('div');
+        titleLine.className = 'tf-title-line';
         const nameEl = document.createElement('span');
         nameEl.className = 'tf-name';
         nameEl.textContent = r.name;
-        nameEl.title = r.name;
+        nameEl.title = tip || r.name;
         const badge = document.createElement('span');
         badge.className = `tf-kind ${kindToClass(r.kind)}`;
         badge.textContent = r.kind;
-        main.appendChild(nameEl);
-        main.appendChild(badge);
+        titleLine.appendChild(nameEl);
+        titleLine.appendChild(badge);
+        main.appendChild(titleLine);
+        if (r.context) {
+          const ctxEl = document.createElement('div');
+          ctxEl.className = 'tf-context';
+          ctxEl.textContent = r.context;
+          main.appendChild(ctxEl);
+        }
 
         const dur = document.createElement('span');
         dur.className = 'tf-dur';
-        dur.textContent = fmtDurationMs(r.duration_ms);
+        dur.textContent = formatStepDuration(r.kind, r.duration_ms);
 
         const gantt = document.createElement('div');
         gantt.className = 'tf-gantt';
         const fill = document.createElement('div');
         fill.className = 'tf-gantt-fill';
-        const leftPct = (r.startMs / total) * 100;
-        const wPct = Math.max((r.duration_ms / total) * 100, 0.5);
-        fill.style.left = `${leftPct}%`;
-        fill.style.width = `${wPct}%`;
+        const guardrailNoTiming =
+          String(r.kind).toUpperCase() === 'GUARDRAIL' && (!r.duration_ms || r.duration_ms === 0);
+        if (guardrailNoTiming) {
+          gantt.style.display = 'none';
+        } else {
+          const leftPct = (r.startMs / total) * 100;
+          const wPct = Math.max((r.duration_ms / total) * 100, 0.5);
+          fill.style.left = `${leftPct}%`;
+          fill.style.width = `${wPct}%`;
+        }
         gantt.appendChild(fill);
 
         row.appendChild(main);
         row.appendChild(dur);
         row.appendChild(gantt);
-        traceflowBody.appendChild(row);
+        traceBodyEl.appendChild(row);
       }
     }
 
@@ -649,20 +762,19 @@
       const text = input.value.trim();
       if (!text) return;
 
-      const userMsg = addMessage('user', text);
+      addMessage('user', text);
       input.value = '';
       submitBtn.disabled = true;
       newChatBtn.disabled = true;
       setError('');
 
-      const assistantDiv = addMessage('assistant', '…', true);
-      const contentEl = assistantDiv.querySelector('.content');
+      const turn = addAssistantTurnWithTrace(true);
+      const assistantDiv = turn.assistantDiv;
+      const contentEl = turn.contentEl;
+      const traceBodyEl = turn.traceBodyEl;
 
       try {
-        const messages = Array.from(messagesEl.querySelectorAll('.msg:not(.typing)')).map(m => ({
-          role: m.classList.contains('user') ? 'user' : 'assistant',
-          content: m.querySelector('.content').textContent
-        }));
+        const messages = collectMessagesForApi();
 
         const nameValue = document.getElementById('nameInput').value.trim() || undefined;
         const res = await fetch(`${API_BASE}/api/chat`, {
@@ -681,7 +793,7 @@
 
         const data = await res.json();
         contentEl.textContent = data.message || '(No response)';
-        if (data.traceflow) renderTraceflow(data.traceflow);
+        renderTraceflowInto(traceBodyEl, data.traceflow);
         const total = data.total_tokens ?? (data.input_tokens != null && data.output_tokens != null ? data.input_tokens + data.output_tokens : null);
         if (total != null || data.input_tokens != null || data.output_tokens != null) {
           const parts = [];
@@ -698,6 +810,11 @@
       } catch (err) {
         contentEl.textContent = 'Sorry, something went wrong.';
         assistantDiv.classList.remove('typing');
+        traceBodyEl.innerHTML = '';
+        const pe = document.createElement('p');
+        pe.className = 'traceflow-placeholder';
+        pe.textContent = 'Request failed — no trace.';
+        traceBodyEl.appendChild(pe);
         setError(err.message || 'Request failed');
       }
 
@@ -722,8 +839,10 @@
         const q = TEST_QUESTIONS[i];
         runTestsProgress.textContent = `Running ${i + 1}/${TEST_QUESTIONS.length}: ${q.name}`;
         addMessage('user', `[Test ${q.id}] ${q.question}`);
-        const assistantDiv = addMessage('assistant', '…', true);
-        const contentEl = assistantDiv.querySelector('.content');
+        const turn = addAssistantTurnWithTrace(true);
+        const assistantDiv = turn.assistantDiv;
+        const contentEl = turn.contentEl;
+        const traceBodyEl = turn.traceBodyEl;
         try {
           const nameValue = document.getElementById('nameInput').value.trim() || undefined;
           const res = await fetch(`${API_BASE}/api/chat`, {
@@ -737,7 +856,7 @@
           }
           const data = await res.json();
           contentEl.textContent = data.message || '(No response)';
-          if (data.traceflow) renderTraceflow(data.traceflow);
+          renderTraceflowInto(traceBodyEl, data.traceflow);
           const total = data.total_tokens ?? (data.input_tokens != null && data.output_tokens != null ? data.input_tokens + data.output_tokens : null);
           if (total != null || data.input_tokens != null || data.output_tokens != null) {
             const parts = [];
@@ -752,6 +871,11 @@
           }
         } catch (err) {
           contentEl.textContent = 'Error: ' + (err.message || 'Request failed');
+          traceBodyEl.innerHTML = '';
+          const pe = document.createElement('p');
+          pe.className = 'traceflow-placeholder';
+          pe.textContent = 'Request failed — no trace.';
+          traceBodyEl.appendChild(pe);
           setError(err.message || 'Request failed');
         }
         assistantDiv.classList.remove('typing');

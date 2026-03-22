@@ -4,6 +4,7 @@ Initialize Traceloop before any LLM client imports.
 """
 import json
 import logging
+import re
 import time
 import uuid
 from os import getenv
@@ -159,6 +160,40 @@ def _chatbot_tools_enabled() -> bool:
     return getenv("CHATBOT_USE_TOOLS", "false").lower() == "true"
 
 
+def _requests_through_litellm() -> bool:
+    """True when the OpenAI client targets LiteLLM (Presidio guardrail runs there pre_call)."""
+    base = (getenv("OPENAI_API_BASE") or "").strip().lower()
+    return bool(base and "litellm" in base)
+
+
+def _guardrail_trace_node() -> dict:
+    """Traceflow row for Presidio PII guardrail (runs inside LiteLLM before the provider call)."""
+    return {
+        "name": "presidio_pii_guardrail",
+        "kind": "GUARDRAIL",
+        "duration_ms": 0.0,
+        "context": "MASK: CREDIT_CARD, EMAIL, PHONE_NUMBER, PERSON, US_SSN (litellm-config)",
+        "detail": "LiteLLM pre_call: Presidio analyzer + anonymizer (MASK per litellm-config.yaml)",
+        "children": [],
+    }
+
+
+def _trace_context_snippet(text: str, max_len: int = 160) -> str:
+    """Single-line snippet for trace UI (no secrets—user-visible chat text only)."""
+    t = (text or "").strip().replace("\n", " ")
+    if len(t) <= max_len:
+        return t
+    return t[: max_len - 1] + "…"
+
+
+def _tool_trace_context(fn_name: str, kwargs: dict) -> str:
+    if fn_name == "get_current_weather":
+        loc = (kwargs.get("location") or "").strip()
+        unit = kwargs.get("unit") or "fahrenheit"
+        return f"location={loc!r}, unit={unit}"
+    return ""
+
+
 def _parse_tool_arguments(raw_args) -> dict:
     """Parse tool call arguments; handle string JSON, list (e.g. model returns schema), or dict."""
     if isinstance(raw_args, dict):
@@ -271,9 +306,80 @@ def _sanitize_user_facing_reply(content: str, messages: list[dict]) -> str:
     )
 
 
-def retrieve_documents(query: str) -> list[str]:
-    """Stub: return empty list. Replace with real Elasticsearch/retrieval later."""
-    return []
+_TEXAS_COLLEGES_PATH = Path(__file__).resolve().parent / "data" / "texas_colleges.json"
+_TEXAS_COLLEGES_CORPUS: list[dict] | None = None
+
+
+def _load_texas_colleges_corpus() -> list[dict]:
+    """Load static Texas colleges JSON (small demo RAG corpus)."""
+    global _TEXAS_COLLEGES_CORPUS
+    if _TEXAS_COLLEGES_CORPUS is None:
+        try:
+            raw = _TEXAS_COLLEGES_PATH.read_text(encoding="utf-8")
+            _TEXAS_COLLEGES_CORPUS = json.loads(raw).get("documents", [])
+        except (OSError, json.JSONDecodeError) as e:
+            logger.warning("Could not load Texas colleges corpus: %s", e)
+            _TEXAS_COLLEGES_CORPUS = []
+    return _TEXAS_COLLEGES_CORPUS
+
+
+def retrieve_documents(query: str, top_k: int = 4) -> list[str]:
+    """Keyword RAG over bundled Texas colleges corpus (no embeddings; demo / local use)."""
+    q = (query or "").strip()
+    if not q:
+        return []
+
+    corpus = _load_texas_colleges_corpus()
+    if not corpus:
+        return []
+
+    q_lower = q.lower()
+    q_tokens = {t for t in re.findall(r"[a-z0-9]+", q_lower) if len(t) > 2}
+    if not q_tokens:
+        q_tokens = {t for t in q_lower.split() if len(t) > 1}
+
+    def doc_text(doc: dict) -> str:
+        parts = [doc.get("title", ""), doc.get("text", "")]
+        parts.extend(doc.get("keywords") or [])
+        return " ".join(parts).lower()
+
+    scored: list[tuple[float, dict]] = []
+    for doc in corpus:
+        hay = doc_text(doc)
+        title_lower = (doc.get("title") or "").lower()
+        score = 0.0
+        for t in q_tokens:
+            score += hay.count(t)
+            if t in title_lower:
+                score += 3.0
+        # phrase / alias boosts (keyword RAG, not embeddings)
+        if ("a&m" in q_lower or "tamu" in q_lower or "aggie" in q_lower) and (
+            "texas a&m" in hay or "aggies" in hay
+        ):
+            score += 4.0
+        if "rice" in q_lower and "rice" in hay:
+            score += 2.0
+        if "san antonio" in q_lower and "san antonio" in hay:
+            score += 2.0
+        if ("ut dallas" in q_lower or "utd" in q_tokens) and "dallas" in hay:
+            score += 2.0
+        if score > 0:
+            scored.append((score, doc))
+
+    scored.sort(key=lambda x: -x[0])
+    picked = [d for _, d in scored[:top_k]]
+
+    if not picked:
+        # Broad Texas / college questions: return overview + a few anchors
+        broad = ("college", "university", "texas", "campus", "school", "degree", "student")
+        if any(b in q_lower for b in broad):
+            overview = next((d for d in corpus if d.get("id") == "utexas_overview"), None)
+            rest = [d for d in corpus if d.get("id") != "utexas_overview"][:2]
+            picked = ([overview] if overview else []) + rest
+        if not picked:
+            return []
+
+    return [f"{d['title']}: {d['text']}" for d in picked]
 
 
 def build_prompt(context: list[str], messages: list[dict]) -> list[dict]:
@@ -326,21 +432,46 @@ def handle_chat(
     children: list | None = trace_root["children"] if trace_root else None
 
     if name and name.strip():
+        nm = name.strip()
         t0 = time.perf_counter()
-        tool_result = get_user_preferences(name.strip())
+        tool_result = get_user_preferences(nm)
         if children is not None:
             children.append(
-                {"name": "get_user_preferences", "kind": "TOOL", "duration_ms": _elapsed_ms(t0), "children": []}
+                {
+                    "name": "get_user_preferences",
+                    "kind": "TOOL",
+                    "duration_ms": _elapsed_ms(t0),
+                    "context": f"returns {json.dumps(tool_result, ensure_ascii=False)}",
+                    "children": [],
+                }
             )
         t0 = time.perf_counter()
         messages = personalize_prompt(tool_result, messages)
         if children is not None:
-            children.append({"name": "personalize_prompt", "kind": "TASK", "duration_ms": _elapsed_ms(t0), "children": []})
+            children.append(
+                {
+                    "name": "personalize_prompt",
+                    "kind": "TASK",
+                    "duration_ms": _elapsed_ms(t0),
+                    "context": f'Adds system: The user\'s name is {nm}. · Prefixes last user message with (Name: {nm}.)',
+                    "children": [],
+                }
+            )
 
     t0 = time.perf_counter()
     context = retrieve_context(query)
     if children is not None:
-        children.append({"name": "retrieve_context", "kind": "TASK", "duration_ms": _elapsed_ms(t0), "children": []})
+        q_snip = _trace_context_snippet(query)
+        n_docs = len(context)
+        children.append(
+            {
+                "name": "retrieve_context",
+                "kind": "TASK",
+                "duration_ms": _elapsed_ms(t0),
+                "context": f"query: {q_snip!r} · chunks: {n_docs} (Texas colleges keyword RAG)",
+                "children": [],
+            }
+        )
 
     gen_children: list | None = [] if children is not None else None
     gen_node: dict | None = None
@@ -349,7 +480,7 @@ def handle_chat(
         children.append(gen_node)
 
     t_gen = time.perf_counter()
-    reply, usage = generate_response(context, messages, trace_children=gen_children)
+    reply, usage = generate_response(context, messages, trace_children=gen_children, trace_meta=gen_node)
     if gen_node is not None:
         gen_node["duration_ms"] = _elapsed_ms(t_gen)
     if trace_root is not None:
@@ -361,7 +492,7 @@ def handle_chat(
 def retrieve_context(query: str) -> list[str]:
     """Task: retrieve documents and set span attributes."""
     span = trace.get_current_span()
-    span.set_attribute("retrieval.source", "elasticsearch")
+    span.set_attribute("retrieval.source", "texas_colleges.json")
     context = retrieve_documents(query)
     span.set_attribute("retrieval.num_results", len(context))
     return context
@@ -394,6 +525,7 @@ def run_agent(messages: list[dict], trace_children: list | None = None) -> tuple
                 content = _sanitize_user_facing_reply(content, messages_copy)
                 if agent_node is not None:
                     agent_node["duration_ms"] = _elapsed_ms(agent_start)
+                    agent_node["context"] = f"{turn + 1} LLM round(s); tools={'on' if _chatbot_tools_enabled() else 'off'}"
                 return content, total_usage
             messages_copy.append(assistant_msg)
             tool_count = 0
@@ -421,9 +553,16 @@ def run_agent(messages: list[dict], trace_children: list | None = None) -> tuple
                 else:
                     result = TOOL_FUNCTIONS[name](**kwargs)
                 if inner is not None:
-                    inner.append(
-                        {"name": name or "tool", "kind": "TOOL", "duration_ms": _elapsed_ms(t_tool), "children": []}
-                    )
+                    tctx = _tool_trace_context(name, kwargs)
+                    tool_node: dict = {
+                        "name": name or "tool",
+                        "kind": "TOOL",
+                        "duration_ms": _elapsed_ms(t_tool),
+                        "children": [],
+                    }
+                    if tctx:
+                        tool_node["context"] = tctx
+                    inner.append(tool_node)
                 messages_copy.append({"role": "tool", "tool_call_id": tool_id, "content": str(result)})
                 tool_count += 1
             if tool_count:
@@ -432,6 +571,7 @@ def run_agent(messages: list[dict], trace_children: list | None = None) -> tuple
         content = _sanitize_user_facing_reply(content or "", messages_copy)
         if agent_node is not None:
             agent_node["duration_ms"] = _elapsed_ms(agent_start)
+            agent_node["context"] = f"{MAX_AGENT_TURNS} rounds (max); tools on"
         return content or "Max agent turns reached.", total_usage
 
 
@@ -440,6 +580,7 @@ def generate_response(
     context: list[str],
     messages: list[dict],
     trace_children: list | None = None,
+    trace_meta: dict | None = None,
 ) -> tuple[str, dict]:
     """Task: build prompt and call LLM (or run agent when tools enabled)."""
     span = trace.get_current_span()
@@ -447,6 +588,19 @@ def generate_response(
     final_messages = build_prompt(context, messages)
     final_messages = _ensure_brevity_system_message(final_messages)
     span.set_attribute("prompt.num_messages", len(final_messages))
+    if trace_meta is not None:
+        model = getenv("OPENAI_MODEL", "gpt-4o-mini")
+        rag = f"{len(context)} RAG chunk(s) in prompt" if context else "no RAG chunks"
+        tools = "tools on" if _chatbot_tools_enabled() else "tools off"
+        base = f"model={model} · {len(final_messages)} messages · {rag} · {tools}"
+        if _requests_through_litellm():
+            base += (
+                " · Nested below: Presidio pre_call (guardrail) runs inside LiteLLM before each "
+                "provider call—order is parent row first (this task), then children in call order."
+            )
+        else:
+            base += " · No LiteLLM hop; presidio_pii_guardrail rows are omitted."
+        trace_meta["context"] = base
     if _chatbot_tools_enabled():
         return run_agent(final_messages, trace_children=trace_children)
     content, usage, _ = _chat_completion(final_messages, trace_children=trace_children)
@@ -485,6 +639,8 @@ def _chat_completion(
     trace_children: list | None = None,
 ) -> tuple[str, dict, dict | None]:
     """LLM call as a task span; returns (content, usage, assistant_message_or_none). When tool_calls present, third is the assistant message to append for the agent loop."""
+    if trace_children is not None and _requests_through_litellm():
+        trace_children.append(_guardrail_trace_node())
     start = time.perf_counter()
     kwargs: dict = {
         "model": getenv("OPENAI_MODEL", "gpt-4o-mini"),
@@ -510,17 +666,35 @@ def _chat_completion(
             "output_tokens": getattr(u, "completion_tokens", None) or getattr(u, "output_tokens", None),
             "total_tokens": getattr(u, "total_tokens", None),
         }
+    model = getenv("OPENAI_MODEL", "gpt-4o-mini")
+    _cc_ctx = f"model={model} · request_messages={len(messages)}"
+    if _chatbot_tools_enabled():
+        _cc_ctx += " · OpenAI tools=auto (get_current_weather)"
+
     if choice.message.tool_calls:
         assistant_msg = _message_to_dict(choice.message)
         content = choice.message.content or f"[Tool calls: {[t.function.name for t in choice.message.tool_calls]}]"
         if trace_children is not None:
+            ntc = [tc.function.name for tc in choice.message.tool_calls]
             trace_children.append(
-                {"name": "chat_completion", "kind": "CHAT", "duration_ms": _elapsed_ms(start), "children": []}
+                {
+                    "name": "chat_completion",
+                    "kind": "CHAT",
+                    "duration_ms": _elapsed_ms(start),
+                    "context": f"{_cc_ctx} · assistant_tool_calls={ntc}",
+                    "children": [],
+                }
             )
         return content, usage, assistant_msg
     if trace_children is not None:
         trace_children.append(
-            {"name": "chat_completion", "kind": "CHAT", "duration_ms": _elapsed_ms(start), "children": []}
+            {
+                "name": "chat_completion",
+                "kind": "CHAT",
+                "duration_ms": _elapsed_ms(start),
+                "context": _cc_ctx,
+                "children": [],
+            }
         )
     return choice.message.content or "", usage, None
 

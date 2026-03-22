@@ -1,0 +1,71 @@
+{
+  "description": "Small static corpus for demo RAG about public and notable colleges in Texas.",
+  "documents": [
+    {
+      "id": "ut_austin",
+      "title": "University of Texas at Austin",
+      "text": "The University of Texas at Austin is a public research university and the flagship of the UT System. It is known for strong engineering, business, and computer science programs. Enrollment is among the largest in the nation. The athletic teams are called the Longhorns.",
+      "keywords": ["austin", "ut", "longhorns", "flagship", "hook"]
+    },
+    {
+      "id": "tamu",
+      "title": "Texas A&M University",
+      "text": "Texas A&M University in College Station is a public land-grant research university and the flagship of the Texas A&M University System. It is known for engineering, agriculture, veterinary medicine, and military tradition (Corps of Cadets). The teams are the Aggies.",
+      "keywords": ["college", "station", "aggies", "corps", "land-grant"]
+    },
+    {
+      "id": "rice",
+      "title": "Rice University",
+      "text": "Rice University is a private research university in Houston. It is selective and known for natural sciences, engineering, and music. The campus is noted for its residential college system and oak-lined quadrangles.",
+      "keywords": ["houston", "private", "selective", "owls"]
+    },
+    {
+      "id": "uh",
+      "title": "University of Houston",
+      "text": "The University of Houston is a public research university in Houston and a member of the UH System. It serves a diverse student body and is strong in business, engineering, and the arts. The Cougars compete in NCAA Division I.",
+      "keywords": ["houston", "cougars", "downtown", "public"]
+    },
+    {
+      "id": "utd",
+      "title": "University of Texas at Dallas",
+      "text": "UT Dallas in Richardson is a public research university in the UT System. It grew from the Texas Instruments research culture and is known for computer science, engineering, and business. The mascot is Temoc the Comet.",
+      "keywords": ["richardson", "dallas", "comets", "engineering", "computer"]
+    },
+    {
+      "id": "utsa",
+      "title": "University of Texas at San Antonio",
+      "text": "UTSA is a public university in San Antonio in the UT System. It emphasizes access, research growth, and cybersecurity programs. The Roadrunners compete in Conference USA / American Athletic Conference depending on era.",
+      "keywords": ["san antonio", "roadrunners", "cybersecurity"]
+    },
+    {
+      "id": "tcu",
+      "title": "Texas Christian University",
+      "text": "TCU is a private university in Fort Worth affiliated with the Christian Church (Disciples of Christ). It offers liberal arts, business, and division I athletics (Horned Frogs). Campus life is residential and undergraduate-focused.",
+      "keywords": ["fort worth", "frogs", "private", "christian"]
+    },
+    {
+      "id": "smu",
+      "title": "Southern Methodist University",
+      "text": "SMU is a private research university in Dallas. It is known for business, law, and the Cox School of Business. The Mustangs play in the American Athletic Conference. The campus is near Highland Park.",
+      "keywords": ["dallas", "mustangs", "cox", "private"]
+    },
+    {
+      "id": "ttu",
+      "title": "Texas Tech University",
+      "text": "Texas Tech in Lubbock is a public research university and flagship of the Texas Tech University System. It is known for engineering, agriculture, wind research, and health sciences. The Red Raiders are the athletic teams.",
+      "keywords": ["lubbock", "red raiders", "wind", "agriculture"]
+    },
+    {
+      "id": "baylor",
+      "title": "Baylor University",
+      "text": "Baylor is a private Baptist research university in Waco. It is known for law, business, nursing, and Big 12 athletics (Bears). It is the oldest continuously operating university in Texas.",
+      "keywords": ["waco", "bears", "baptist", "big 12"]
+    },
+    {
+      "id": "utexas_overview",
+      "title": "Higher education in Texas (overview)",
+      "text": "Texas has many public systems (UT System, Texas A&M System, Texas State, Texas Tech, UH System) and private institutions. Community colleges feed transfers into universities. The state emphasizes STEM, energy, and healthcare workforce pipelines.",
+      "keywords": ["texas", "college", "university", "system", "public", "private", "education"]
+    }
+  ]
+}

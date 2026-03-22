@@ -1,6 +1,6 @@
 # Chatbot website + OpenTelemetry Collector → Elastic APM
-# With LiteLLM + Presidio: set OPENAI_API_BASE=http://litellm:4000 (default) so the app calls the proxy; proxy runs PII guardrail then forwards to Ollama.
-# To bypass LiteLLM and call Ollama directly: OPENAI_API_BASE=http://ollama:11434/v1 (and remove litellm from depends_on).
+# Default: app → LiteLLM (:4000) → Presidio → OpenAI gpt-4o-mini (set OPENAI_API_KEY in .env). tinyllama stays in litellm-config for OPENAI_MODEL=tinyllama.
+# Bypass LiteLLM to Ollama only: OPENAI_API_BASE=http://ollama:11434/v1 (adjust app depends_on if needed).
 
 services:
   app:
@@ -10,12 +10,12 @@ services:
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY:-ollama}
       - OPENAI_API_BASE=${OPENAI_API_BASE:-http://litellm:4000}
-      - OPENAI_MODEL=${OPENAI_MODEL:-tinyllama}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}
       - OTEL_SERVICE_NAME=${OTEL_SERVICE_NAME:-chatbot-service}
       - SERVICE_ENVIRONMENT=${SERVICE_ENVIRONMENT:-chatbot}
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
-      # Off by default: small models (tinyllama) echo tool JSON instead of answering; set true for GPT-class models.
-      - CHATBOT_USE_TOOLS=${CHATBOT_USE_TOOLS:-false}
+      # Agent loop + traces (agent_call). Default model supports tools; set false if you switch to tinyllama only.
+      - CHATBOT_USE_TOOLS=${CHATBOT_USE_TOOLS:-true}
       - CHATBOT_SYSTEM_INSTRUCTION=${CHATBOT_SYSTEM_INSTRUCTION:-}
     depends_on:
       otel-collector:
@@ -32,6 +32,8 @@ services:
     volumes:
       - ./litellm-config.yaml:/app/config.yaml:ro
     environment:
+      # Required for gpt-4o-mini route in litellm-config.yaml (same as app .env)
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       # Container port 3000 (host maps 5002/5001 for local debugging only)
       - PRESIDIO_ANALYZER_API_BASE=http://presidio-analyzer:3000
       - PRESIDIO_ANONYMIZER_API_BASE=http://presidio-anonymizer:3000
