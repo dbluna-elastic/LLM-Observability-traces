@@ -52,12 +52,19 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from app.deepeval_score import score_chat_turn
+from app.deepeval_score import score_agent_task_completion, score_chat_turn
 from app.weather_open_meteo import fetch_current_weather
 
 
 def _deepeval_scoring_enabled() -> bool:
     return getenv("DEEPEVAL_SCORE_CHAT", "").lower() in ("1", "true", "yes")
+
+
+def _deepeval_agent_scoring_enabled() -> bool:
+    """Task-completion judge when the agent loop invoked tools (extra LLM calls)."""
+    if not _deepeval_scoring_enabled():
+        return False
+    return getenv("DEEPEVAL_SCORE_AGENT", "true").lower() in ("1", "true", "yes")
 
 
 @asynccontextmanager
@@ -66,8 +73,14 @@ async def _app_lifespan(_app: FastAPI):
     _boot = logging.getLogger("uvicorn.error")
     logging.getLogger("app").setLevel(logging.INFO)
     if _deepeval_scoring_enabled():
+        agent_note = (
+            " + Task Completion for agent tool calls (deepeval_task_completion)"
+            if _deepeval_agent_scoring_enabled()
+            else " (DEEPEVAL_SCORE_AGENT=false: skipping task-completion judge for tool runs)"
+        )
         _boot.info(
-            "DEEPEVAL_SCORE_CHAT enabled: Answer Relevancy after each successful chat (OTEL span: deepeval_answer_relevancy)"
+            "DEEPEVAL_SCORE_CHAT enabled: Answer Relevancy (deepeval_answer_relevancy)%s",
+            agent_note,
         )
     else:
         _boot.info(
@@ -117,7 +130,7 @@ class ChatResponse(BaseModel):
     total_tokens: int | None = None
     # Hierarchical trace for the Traceflow UI (OpenLLMetry-style names; timings from this request only).
     traceflow: dict | None = None
-    # DeepEval (answer relevancy, etc.) when DEEPEVAL_SCORE_CHAT=true
+    # DeepEval when DEEPEVAL_SCORE_CHAT=true: answer_relevancy fields + optional nested task_completion (agent/tools).
     evaluation: dict | None = None
 
 
@@ -560,7 +573,7 @@ def handle_chat(
     messages: list[dict],
     name: str | None = None,
     trace_root: dict | None = None,
-) -> tuple[str, dict]:
+) -> tuple[str, dict, list[dict]]:
     """Workflow: optional tool+task for name/personalization, then retrieve context and generate response."""
     wf_start = time.perf_counter()
     children: list | None = trace_root["children"] if trace_root else None
@@ -614,12 +627,14 @@ def handle_chat(
         children.append(gen_node)
 
     t_gen = time.perf_counter()
-    reply, usage = generate_response(context, messages, trace_children=gen_children, trace_meta=gen_node)
+    reply, usage, agent_tools = generate_response(
+        context, messages, trace_children=gen_children, trace_meta=gen_node
+    )
     if gen_node is not None:
         gen_node["duration_ms"] = _elapsed_ms(t_gen)
     if trace_root is not None:
         trace_root["duration_ms"] = _elapsed_ms(wf_start)
-    return reply, usage
+    return reply, usage, agent_tools
 
 
 @task(name="retrieve_context")
@@ -635,8 +650,12 @@ def retrieve_context(query: str) -> list[str]:
 MAX_AGENT_TURNS = 10
 
 
-def run_agent(messages: list[dict], trace_children: list | None = None) -> tuple[str, dict]:
-    """Agent loop: call LLM with tools; when model returns tool_calls, execute tools and re-call until final answer (e.g. weather in Texas)."""
+def run_agent(messages: list[dict], trace_children: list | None = None) -> tuple[str, dict, list[dict]]:
+    """Agent loop: call LLM with tools; when model returns tool_calls, execute tools and re-call until final answer (e.g. weather in Texas).
+
+    Returns ``(reply, usage, tools_invoked)`` where ``tools_invoked`` is a list of
+    ``{"name", "input_parameters", "output"}`` dicts for DeepEval task-completion scoring.
+    """
     with tracer.start_as_current_span("agent_call") as span:
         span.set_attribute("llm.agent", True)
         agent_start = time.perf_counter()
@@ -648,6 +667,7 @@ def run_agent(messages: list[dict], trace_children: list | None = None) -> tuple
 
         messages_copy = list(messages)
         total_usage: dict = {}
+        tools_invoked: list[dict] = []
         content = ""
         for turn in range(MAX_AGENT_TURNS):
             content, usage, assistant_msg = _chat_completion(messages_copy, trace_children=inner)
@@ -660,7 +680,7 @@ def run_agent(messages: list[dict], trace_children: list | None = None) -> tuple
                 if agent_node is not None:
                     agent_node["duration_ms"] = _elapsed_ms(agent_start)
                     agent_node["context"] = f"{turn + 1} LLM round(s); tools={'on' if _chatbot_tools_enabled() else 'off'}"
-                return content, total_usage
+                return content, total_usage, tools_invoked
             messages_copy.append(assistant_msg)
             tool_count = 0
             for tc in assistant_msg.get("tool_calls", []):
@@ -684,8 +704,17 @@ def run_agent(messages: list[dict], trace_children: list | None = None) -> tuple
                     if unit not in ("celsius", "fahrenheit"):
                         unit = "fahrenheit"
                     result = TOOL_FUNCTIONS[name](location=loc, unit=unit)
+                    record_params = {"location": loc, "unit": unit}
                 else:
                     result = TOOL_FUNCTIONS[name](**kwargs)
+                    record_params = {k: v for k, v in kwargs.items()}
+                tools_invoked.append(
+                    {
+                        "name": name,
+                        "input_parameters": record_params,
+                        "output": str(result),
+                    }
+                )
                 if inner is not None:
                     tctx = _tool_trace_context(name, kwargs)
                     tool_node: dict = {
@@ -706,7 +735,7 @@ def run_agent(messages: list[dict], trace_children: list | None = None) -> tuple
         if agent_node is not None:
             agent_node["duration_ms"] = _elapsed_ms(agent_start)
             agent_node["context"] = f"{MAX_AGENT_TURNS} rounds (max); tools on"
-        return content or "Max agent turns reached.", total_usage
+        return content or "Max agent turns reached.", total_usage, tools_invoked
 
 
 @task(name="generate_response")
@@ -715,7 +744,7 @@ def generate_response(
     messages: list[dict],
     trace_children: list | None = None,
     trace_meta: dict | None = None,
-) -> tuple[str, dict]:
+) -> tuple[str, dict, list[dict]]:
     """Task: build prompt and call LLM (or run agent when tools enabled)."""
     span = trace.get_current_span()
     span.set_attribute("prompt.template", getenv("PROMPT_TEMPLATE", "rag_v2"))
@@ -739,7 +768,7 @@ def generate_response(
         return run_agent(final_messages, trace_children=trace_children)
     content, usage, _ = _chat_completion(final_messages, trace_children=trace_children)
     content = _sanitize_user_facing_reply(content, final_messages)
-    return content, usage
+    return content, usage, []
 
 
 def _trace_headers() -> dict[str, str]:
@@ -1077,7 +1106,7 @@ def chat(req: ChatRequest, request: Request):
         "children": [],
     }
     try:
-        reply, usage = handle_chat(query, messages, name=name, trace_root=trace_root)
+        reply, usage, agent_tools = handle_chat(query, messages, name=name, trace_root=trace_root)
     except OpenAIAPIStatusError as e:
         _log_llm_upstream_error(e, "chat")
         if getattr(e, "status_code", None) == 400 and _is_likely_content_policy_block(e):
@@ -1147,6 +1176,31 @@ def chat(req: ChatRequest, request: Request):
                 logger.info("DeepEval skipped: %s", evaluation.get("reason", ""))
             elif evaluation.get("error"):
                 logger.warning("DeepEval failed: %s", evaluation.get("error"))
+
+        tc_eval = None
+        if _deepeval_agent_scoring_enabled() and agent_tools:
+            with tracer.start_as_current_span("deepeval_task_completion") as tc_span:
+                tc_eval = score_agent_task_completion(query, reply, agent_tools)
+                if tc_eval is not None:
+                    tc_span.set_attribute("deepeval.metric", "task_completion")
+                    if isinstance(tc_eval.get("score"), (int, float)):
+                        tcs = float(tc_eval["score"])
+                        tc_span.set_attribute("deepeval.score", tcs)
+                        tc_span.set_attribute("deepeval.task_completion", tcs)
+                    if tc_eval.get("error"):
+                        tc_span.set_attribute(
+                            "deepeval.error", str(tc_eval["error"])[:512]
+                        )
+                    jm = tc_eval.get("judge_model")
+                    if jm:
+                        tc_span.set_attribute("deepeval.judge_model", str(jm)[:128])
+                    tc_span.set_attribute("deepeval.tools_invoked_count", len(agent_tools))
+                    evaluation = {**evaluation, "task_completion": tc_eval}
+            if tc_eval is not None:
+                if isinstance(tc_eval.get("score"), (int, float)):
+                    logger.info("DeepEval task_completion score=%s", tc_eval["score"])
+                elif tc_eval.get("error"):
+                    logger.warning("DeepEval task_completion failed: %s", tc_eval.get("error"))
 
     return ChatResponse(
         message=reply,

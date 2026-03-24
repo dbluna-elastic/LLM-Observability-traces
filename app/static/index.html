@@ -757,22 +757,25 @@
       errorEl.textContent = msg || '';
     }
 
-    /** Show DeepEval answer_relevancy when API returns evaluation (DEEPEVAL_SCORE_CHAT=true). */
+    /** Show DeepEval answer_relevancy + optional task_completion (DEEPEVAL_SCORE_CHAT / agent tools). */
     function appendEvaluation(assistantDiv, ev) {
       if (!ev || typeof ev !== 'object') return;
-      const line = document.createElement('div');
-      line.className = 'tokens';
-      if (ev.skipped) {
+      if (ev.skipped && !ev.task_completion) {
+        const line = document.createElement('div');
+        line.className = 'tokens';
         line.textContent = 'Eval: skipped';
         assistantDiv.appendChild(line);
         return;
       }
-      if (ev.error) {
-        line.textContent = 'Eval error: ' + String(ev.error).slice(0, 240);
-        assistantDiv.appendChild(line);
-        return;
+      if (ev.error && ev.score == null && !ev.skipped) {
+        const errLine = document.createElement('div');
+        errLine.className = 'tokens';
+        errLine.textContent = 'Eval (answer relevancy) error: ' + String(ev.error).slice(0, 240);
+        assistantDiv.appendChild(errLine);
       }
-      if (ev.score != null) {
+      if (ev.score != null && ev.metric !== 'task_completion') {
+        const line = document.createElement('div');
+        line.className = 'tokens';
         const n = typeof ev.score === 'number' ? ev.score.toFixed(3) : String(ev.score);
         let s = 'DeepEval answer relevancy: ' + n;
         if (ev.success === false) s += ' (below threshold)';
@@ -780,7 +783,7 @@
         line.textContent = s;
         assistantDiv.appendChild(line);
       }
-      if (ev.reason) {
+      if (ev.reason && ev.metric !== 'task_completion') {
         const r = document.createElement('div');
         r.className = 'tokens';
         r.style.marginTop = '0.25rem';
@@ -788,6 +791,33 @@
         const rs = String(ev.reason);
         r.textContent = rs.slice(0, 500) + (rs.length > 500 ? '…' : '');
         assistantDiv.appendChild(r);
+      }
+      const tc = ev.task_completion;
+      if (tc && typeof tc === 'object') {
+        const tcLine = document.createElement('div');
+        tcLine.className = 'tokens';
+        tcLine.style.marginTop = '0.35rem';
+        if (tc.error) {
+          tcLine.textContent = 'DeepEval task completion error: ' + String(tc.error).slice(0, 220);
+        } else if (tc.score != null) {
+          const n = typeof tc.score === 'number' ? tc.score.toFixed(3) : String(tc.score);
+          let s = 'DeepEval task completion (agent/tools): ' + n;
+          if (tc.success === false) s += ' (below threshold)';
+          if (tc.judge_model) s += ' · judge: ' + tc.judge_model;
+          tcLine.textContent = s;
+        } else {
+          tcLine.textContent = 'DeepEval task completion: (no score)';
+        }
+        assistantDiv.appendChild(tcLine);
+        if (tc.reason) {
+          const tr = document.createElement('div');
+          tr.className = 'tokens';
+          tr.style.marginTop = '0.2rem';
+          tr.style.fontSize = '0.78rem';
+          const rs = String(tc.reason);
+          tr.textContent = rs.slice(0, 500) + (rs.length > 500 ? '…' : '');
+          assistantDiv.appendChild(tr);
+        }
       }
     }
 

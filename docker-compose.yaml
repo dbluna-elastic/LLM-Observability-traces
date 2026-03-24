@@ -25,6 +25,8 @@ services:
       - EXPOSE_LLM_MODELS=${EXPOSE_LLM_MODELS:-false}
       # DeepEval: LLM-as-judge answer relevancy on each chat (extra latency + API cost)
       - DEEPEVAL_SCORE_CHAT=${DEEPEVAL_SCORE_CHAT:-false}
+      # When true (default), runs Task Completion judge if the agent loop invoked tools (adds LLM calls)
+      - DEEPEVAL_SCORE_AGENT=${DEEPEVAL_SCORE_AGENT:-true}
       - DEEPEVAL_JUDGE_MODEL=${DEEPEVAL_JUDGE_MODEL:-}
       - DEEPEVAL_INCLUDE_REASON=${DEEPEVAL_INCLUDE_REASON:-true}
       - DEEPEVAL_TELEMETRY_OPT_OUT=${DEEPEVAL_TELEMETRY_OPT_OUT:-YES}
