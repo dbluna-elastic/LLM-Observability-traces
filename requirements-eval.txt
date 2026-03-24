@@ -1,0 +1,2 @@
+# LLM-as-judge scoring (Answer Relevancy, etc.); installed in the app image for optional chat eval
+deepeval>=2.5.0,<3

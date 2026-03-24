@@ -757,6 +757,40 @@
       errorEl.textContent = msg || '';
     }
 
+    /** Show DeepEval answer_relevancy when API returns evaluation (DEEPEVAL_SCORE_CHAT=true). */
+    function appendEvaluation(assistantDiv, ev) {
+      if (!ev || typeof ev !== 'object') return;
+      const line = document.createElement('div');
+      line.className = 'tokens';
+      if (ev.skipped) {
+        line.textContent = 'Eval: skipped';
+        assistantDiv.appendChild(line);
+        return;
+      }
+      if (ev.error) {
+        line.textContent = 'Eval error: ' + String(ev.error).slice(0, 240);
+        assistantDiv.appendChild(line);
+        return;
+      }
+      if (ev.score != null) {
+        const n = typeof ev.score === 'number' ? ev.score.toFixed(3) : String(ev.score);
+        let s = 'DeepEval answer relevancy: ' + n;
+        if (ev.success === false) s += ' (below threshold)';
+        if (ev.judge_model) s += ' · judge: ' + ev.judge_model;
+        line.textContent = s;
+        assistantDiv.appendChild(line);
+      }
+      if (ev.reason) {
+        const r = document.createElement('div');
+        r.className = 'tokens';
+        r.style.marginTop = '0.25rem';
+        r.style.fontSize = '0.78rem';
+        const rs = String(ev.reason);
+        r.textContent = rs.slice(0, 500) + (rs.length > 500 ? '…' : '');
+        assistantDiv.appendChild(r);
+      }
+    }
+
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       const text = input.value.trim();
@@ -806,6 +840,7 @@
           tokenEl.textContent = `Tokens: ${parts.join(' · ')}`;
           assistantDiv.appendChild(tokenEl);
         }
+        appendEvaluation(assistantDiv, data.evaluation);
         assistantDiv.classList.remove('typing');
       } catch (err) {
         contentEl.textContent = 'Sorry, something went wrong.';
@@ -869,6 +904,7 @@
             tokenEl.textContent = 'Tokens: ' + parts.join(' · ');
             assistantDiv.appendChild(tokenEl);
           }
+          appendEvaluation(assistantDiv, data.evaluation);
         } catch (err) {
           contentEl.textContent = 'Error: ' + (err.message || 'Request failed');
           traceBodyEl.innerHTML = '';

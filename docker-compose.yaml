@@ -23,6 +23,11 @@ services:
       - CHATBOT_SYSTEM_INSTRUCTION=${CHATBOT_SYSTEM_INSTRUCTION:-}
       - DEBUG_LLM_ERRORS=${DEBUG_LLM_ERRORS:-false}
       - EXPOSE_LLM_MODELS=${EXPOSE_LLM_MODELS:-false}
+      # DeepEval: LLM-as-judge answer relevancy on each chat (extra latency + API cost)
+      - DEEPEVAL_SCORE_CHAT=${DEEPEVAL_SCORE_CHAT:-false}
+      - DEEPEVAL_JUDGE_MODEL=${DEEPEVAL_JUDGE_MODEL:-}
+      - DEEPEVAL_INCLUDE_REASON=${DEEPEVAL_INCLUDE_REASON:-true}
+      - DEEPEVAL_TELEMETRY_OPT_OUT=${DEEPEVAL_TELEMETRY_OPT_OUT:-YES}
     depends_on:
       otel-collector:
         condition: service_started

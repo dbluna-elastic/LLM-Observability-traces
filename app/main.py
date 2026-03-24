@@ -9,6 +9,7 @@ import time
 import uuid
 import urllib.error
 import urllib.request
+from contextlib import asynccontextmanager
 from os import getenv
 from pathlib import Path
 
@@ -51,7 +52,29 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
+from app.deepeval_score import score_chat_turn
 from app.weather_open_meteo import fetch_current_weather
+
+
+def _deepeval_scoring_enabled() -> bool:
+    return getenv("DEEPEVAL_SCORE_CHAT", "").lower() in ("1", "true", "yes")
+
+
+@asynccontextmanager
+async def _app_lifespan(_app: FastAPI):
+    # Log on a logger Uvicorn already configures so startup lines always appear in docker logs.
+    _boot = logging.getLogger("uvicorn.error")
+    logging.getLogger("app").setLevel(logging.INFO)
+    if _deepeval_scoring_enabled():
+        _boot.info(
+            "DEEPEVAL_SCORE_CHAT enabled: Answer Relevancy after each successful chat (OTEL span: deepeval_answer_relevancy)"
+        )
+    else:
+        _boot.info(
+            "DEEPEVAL_SCORE_CHAT is off (default). Set DEEPEVAL_SCORE_CHAT=true in .env and recreate the app container."
+        )
+    yield
+
 
 # Support OpenAI or Ollama (OpenAI-compatible): set OPENAI_API_BASE for Ollama (e.g. http://ollama:11434/v1)
 _api_base = getenv("OPENAI_API_BASE")
@@ -60,7 +83,7 @@ if _api_base:
     _client_kwargs["base_url"] = _api_base.rstrip("/")
 client = OpenAI(**_client_kwargs)
 
-app = FastAPI(title="Chatbot with LLM Observability")
+app = FastAPI(title="Chatbot with LLM Observability", lifespan=_app_lifespan)
 
 static_dir = Path(__file__).resolve().parent / "static"
 if static_dir.is_dir():
@@ -94,6 +117,8 @@ class ChatResponse(BaseModel):
     total_tokens: int | None = None
     # Hierarchical trace for the Traceflow UI (OpenLLMetry-style names; timings from this request only).
     traceflow: dict | None = None
+    # DeepEval (answer relevancy, etc.) when DEEPEVAL_SCORE_CHAT=true
+    evaluation: dict | None = None
 
 
 def _elapsed_ms(since: float) -> float:
@@ -1094,8 +1119,34 @@ def chat(req: ChatRequest, request: Request):
             total_tokens=None,
         )
 
-    span = trace.get_current_span()
-    span.set_attribute("response.quality_score", 0.0)  # placeholder; set from feedback when available
+    evaluation: dict | None = None
+    if _deepeval_scoring_enabled():
+        # Own span: after @workflow(handle_chat) returns the "current" OTEL span is unreliable for attributes
+        # in some setups; a dedicated child span shows up clearly in APM (e.g. Elastic) waterfalls.
+        with tracer.start_as_current_span("deepeval_answer_relevancy") as eval_span:
+            evaluation = score_chat_turn(query, reply)
+            if evaluation:
+                eval_span.set_attribute("deepeval.metric", "answer_relevancy")
+                if isinstance(evaluation.get("score"), (int, float)):
+                    s = float(evaluation["score"])
+                    eval_span.set_attribute("deepeval.score", s)
+                    eval_span.set_attribute("deepeval.answer_relevancy", s)
+                if evaluation.get("skipped"):
+                    eval_span.set_attribute("deepeval.skipped", True)
+                if evaluation.get("error"):
+                    eval_span.set_attribute(
+                        "deepeval.error", str(evaluation["error"])[:512]
+                    )
+                jm = evaluation.get("judge_model")
+                if jm:
+                    eval_span.set_attribute("deepeval.judge_model", str(jm)[:128])
+        if evaluation:
+            if isinstance(evaluation.get("score"), (int, float)):
+                logger.info("DeepEval answer_relevancy score=%s", evaluation["score"])
+            elif evaluation.get("skipped"):
+                logger.info("DeepEval skipped: %s", evaluation.get("reason", ""))
+            elif evaluation.get("error"):
+                logger.warning("DeepEval failed: %s", evaluation.get("error"))
 
     return ChatResponse(
         message=reply,
@@ -1103,6 +1154,7 @@ def chat(req: ChatRequest, request: Request):
         output_tokens=usage.get("output_tokens"),
         total_tokens=usage.get("total_tokens"),
         traceflow=trace_root,
+        evaluation=evaluation,
     )
 
 

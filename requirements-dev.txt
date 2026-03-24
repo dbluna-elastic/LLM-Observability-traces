@@ -1,0 +1,3 @@
+-r requirements.txt
+-r requirements-eval.txt
+pytest>=8.0.0
