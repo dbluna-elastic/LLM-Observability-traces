@@ -95,7 +95,7 @@ When **PROPAGATE_TRACE_TO_LITELLM=true**, the same trace in Elastic also include
 | Variable                    | Effect |
 |----------------------------|--------|
 | `PROPAGATE_TRACE_TO_LITELLM` | `true` → app sends traceparent to LiteLLM so proxy spans are in the same trace. |
-| `CHATBOT_USE_TOOLS`        | `true` → agent loop runs; you see `agent_call` and tool spans (e.g. `get_current_weather`). Default in compose is `true`; set `false` for tinyllama if tools misbehave. |
+| `CHATBOT_USE_TOOLS`        | `true` → agent loop runs; you see `agent_call` and tool spans (e.g. `get_current_weather`). Default in compose is `false` (tinyllama); set `true` for tool-capable models. |
 | `TRACELOOP_TRACE_CONTENT`  | `false` → prompt/completion content not sent to Elastic. |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` (app) | Where the app sends OTLP (default: collector :4318). |
 | `OTEL_TRACES_EXPORTER`, `OTEL_EXPORTER_OTLP_*` (LiteLLM) | LiteLLM OTLP export to the same collector. |

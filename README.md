@@ -4,10 +4,11 @@ A small website with a chatbot running in Docker, instrumented with [OpenLLMetry
 
 ## Architecture
 
-- **App**: FastAPI backend + static chat UI. Calls the **LiteLLM proxy** (default) or Ollama/OpenAI directly. Traceloop SDK traces every LLM call.
-- **LiteLLM proxy**: OpenAI-compatible gateway on port 4000. Runs a **Presidio PII guardrail** (pre-call), then routes by model—default **`gpt-4o-mini`** (OpenAI API; requires **`OPENAI_API_KEY`**). **`tinyllama`** via Ollama remains available in [`litellm-config.yaml`](litellm-config.yaml) if you set `OPENAI_MODEL=tinyllama`.
-- **Presidio**: Two self-hosted services. **From your host**, analyzer is on **5002** and anonymizer on **5001** (mapped to port **3000** inside each container). **LiteLLM must call** `http://presidio-analyzer:3000` and `http://presidio-anonymizer:3000` on the Docker network—not the host-mapped ports.
-- **Ollama**: Optional local LLM; still in Compose so you can set `OPENAI_MODEL=tinyllama`. Pulls **`OLLAMA_MODEL`** (default `tinyllama`) on first use.
+- **App**: FastAPI backend + static chat UI. OpenAI-compatible client (`OPENAI_API_BASE` / `OPENAI_MODEL`). Traceloop SDK traces every LLM call.
+- **Elastic LiteLLM (hosted)**: Default chat path; `OPENAI_API_BASE` defaults to `https://elastic.litellm-prod.ai` (host only, per Elastic’s OpenAI client example) with **`OPENAI_API_KEY`** from your deployment.
+- **Local LiteLLM** (port 4000): Optional; **Presidio** + [`litellm-config.yaml`](litellm-config.yaml) for **`tinyllama`** (Ollama) or **`gpt-4.1-mini`** with an API key on the **litellm** service.
+- **Presidio**: Used with **local** LiteLLM only. Host ports **5002** / **5001** map to container **3000**; Docker DNS `presidio-analyzer:3000` / `presidio-anonymizer:3000`.
+- **Ollama**: Local LLM for **`tinyllama`** through local LiteLLM; pulls **`OLLAMA_MODEL`** (~600MB) on first use.
 - **OpenTelemetry Collector**: Receives OTLP from the app (and optionally from LiteLLM) and forwards traces to Elastic APM Server (8.x+ supports OTLP on port 8200).
 - **Elastic**: Your existing cluster with APM Server and Kibana. Traces show up under **Observability → APM → Services** as `chatbot-service` (or your `OTEL_SERVICE_NAME`).
 
@@ -19,20 +20,18 @@ The chat workflow runs a small **keyword retrieval** step over [`app/data/texas_
 
 - Docker and Docker Compose
 - **Elastic** cluster with **APM Server 8.x+** (OTLP enabled on port 8200)
-- **LLM**: default stack uses **OpenAI** (`gpt-4o-mini` through LiteLLM)—you need an **OpenAI API key**. Optional **Ollama** (`tinyllama`) for a fully local model.
+- **LLM**: default Compose targets **Elastic LiteLLM prod**; you need a valid **`OPENAI_API_KEY`**. **`OPENAI_MODEL` must be the full `id` from `/v1/models`** (Elastic’s gateway often uses a prefix, e.g. **`llm-gateway/gpt-4.1-mini`**—not bare `gpt-4.1-mini`). List ids: set **`EXPOSE_LLM_MODELS=true`**, restart, then **GET [http://localhost:8088/api/llm/models](http://localhost:8088/api/llm/models)**, or `curl -H "Authorization: Bearer $OPENAI_API_KEY" "$OPENAI_API_BASE/v1/models"`. For fully **local** Ollama, switch **`OPENAI_API_BASE`** and **`OPENAI_MODEL`** (see `.env.example`).
 
-## Quick start (LiteLLM + Presidio + OpenAI gpt-4o-mini)
+## Quick start (Elastic LiteLLM + traces)
 
-The app calls **LiteLLM** by default; LiteLLM runs **Presidio**, then **OpenAI** for `gpt-4o-mini`. **Set a real `OPENAI_API_KEY`** in `.env` (it is passed to both the **app** and **litellm** services). The **Ollama** service still starts so you can switch to `OPENAI_MODEL=tinyllama` without editing compose.
-
-1. **Copy env and set Elastic + OpenAI**
+1. **Copy env and set keys**
 
    ```bash
    cp .env.example .env
    # Edit .env and set:
-   #   OPENAI_API_KEY=sk-...        # required for default gpt-4o-mini
+   #   OPENAI_API_KEY=<your Elastic LiteLLM / provider key>
    #   ELASTIC_APM_SERVER_URL=https://your-apm-host:8200
-   # Optional: ELASTIC_APM_SECRET_TOKEN. OPENAI_API_BASE defaults to http://litellm:4000.
+   # Defaults: OPENAI_API_BASE=https://elastic.litellm-prod.ai, OPENAI_MODEL=llm-gateway/gpt-4.1-mini (override using /v1/models ids)
    ```
 
 2. **Run with Docker Compose**
@@ -40,11 +39,11 @@ The app calls **LiteLLM** by default; LiteLLM runs **Presidio**, then **OpenAI**
    ```bash
    docker compose up --build
    ```
-   Presidio and LiteLLM start automatically. If you use **`tinyllama`**, the Ollama container will pull it (~600MB) on first use.
+   The **app** does not wait on the local **litellm** container. Optional services (local LiteLLM, Presidio, Ollama) still start if you use the full file.
 
-3. **Presidio guardrails (LiteLLM)**
+3. **Presidio (local LiteLLM only)**
 
-   In [`litellm-config.yaml`](litellm-config.yaml), `presidio-pii` has **`default_on: true`**, so each prompt is run through Presidio (PII masked per `pii_entities_config`) before the model. Restart the **litellm** container after editing that file. Set `default_on: false` if you need to bypass the guardrail (e.g. local debugging).
+   When **`OPENAI_API_BASE=http://litellm:4000`**, [`litellm-config.yaml`](litellm-config.yaml) runs **Presidio** `pre_call` on each request. Restart **litellm** after edits.
 
 4. **Open the app**
 
@@ -57,27 +56,38 @@ The app calls **LiteLLM** by default; LiteLLM runs **Presidio**, then **OpenAI**
    - Select service `chatbot-service`
    - You’ll see transactions/spans for each chat and LLM call, including tool calls, token usage, and model name.
 
-## Using Ollama only (no OpenAI key)
-
-In `.env`, point at Ollama and use the tinyllama route (already in `litellm-config.yaml`):
+## Local LiteLLM + Ollama (tinyllama)
 
 ```bash
 OPENAI_API_BASE=http://litellm:4000
 OPENAI_MODEL=tinyllama
 OPENAI_API_KEY=ollama
-CHATBOT_USE_TOOLS=false   # recommended for tinyllama
+CHATBOT_USE_TOOLS=false
 ```
 
-Or bypass LiteLLM: `OPENAI_API_BASE=http://ollama:11434/v1` (see compose comments). You can remove or stop the `ollama` service if you only use OpenAI and never `tinyllama`.
+Restart: `docker compose up -d --force-recreate app`. Ensure the **litellm** service is healthy before chatting.
 
-## Calling OpenAI without LiteLLM
+## Local LiteLLM + OpenAI-backed model
 
-In `.env`, clear the proxy base URL so the app talks to OpenAI directly (no Presidio on that path unless you add it elsewhere):
+```bash
+OPENAI_API_BASE=http://litellm:4000
+OPENAI_MODEL=gpt-4.1-mini   # must match `model_name` in litellm-config.yaml
+OPENAI_API_KEY=sk-...       # also used by the litellm container in compose
+CHATBOT_USE_TOOLS=true
+```
+
+## Other OpenAI-compatible bases
+
+- **Elastic LiteLLM / LiteLLM proxy (typical)**: use the **host only** (e.g. `https://elastic.litellm-prod.ai` or `http://litellm:4000`) — same as the official OpenAI Python `base_url` examples.
+- **Ollama**: use **`http://ollama:11434/v1`** (Ollama exposes the OpenAI API under `/v1/...`).
+- **api.openai.com**: leave `OPENAI_API_BASE` unset; the client uses the default OpenAI URL.
+
+Example direct OpenAI:
 
 ```bash
 OPENAI_API_BASE=
 OPENAI_API_KEY=sk-...
-OPENAI_MODEL=gpt-4o-mini
+OPENAI_MODEL=llm-gateway/gpt-4.1-mini
 CHATBOT_USE_TOOLS=true
 ```
 
@@ -85,9 +95,10 @@ CHATBOT_USE_TOOLS=true
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `OPENAI_API_BASE` | No | LLM API base URL. Default `http://litellm:4000` (LiteLLM + Presidio → OpenAI or Ollama per model). Use `http://ollama:11434/v1` to bypass LiteLLM. Leave empty for direct OpenAI. |
-| `OPENAI_API_KEY` | Yes (default stack) | **Required** for `gpt-4o-mini` (set on app and LiteLLM in Compose). Use `ollama` when using only the `tinyllama` route through LiteLLM. |
-| `OPENAI_MODEL` | No | Default in Compose: **`gpt-4o-mini`**. Use **`tinyllama`** for local Ollama via LiteLLM. Must match a `model_name` in `litellm-config.yaml`. |
+| `OPENAI_API_BASE` | No | Default **`https://elastic.litellm-prod.ai`** (no `/v1`). For local Presidio + proxy use `http://litellm:4000`. Use `http://ollama:11434/v1` for Ollama only. Leave empty for default OpenAI API. |
+| `OPENAI_API_KEY` | Yes (default stack) | Required for Elastic LiteLLM prod / cloud models. Use **`ollama`** only for local **`tinyllama`** via `http://litellm:4000`. Also passed to **litellm** service for local OpenAI-backed routes. |
+| `OPENAI_MODEL` | No | Default in Compose: **`llm-gateway/gpt-4.1-mini`** (Elastic-style prefixed id). Use any **`id` from `/v1/models`**. Use **`tinyllama`** only with local `http://litellm:4000` + Ollama. Must match a `model_name` in `litellm-config.yaml` when using **local** LiteLLM. |
+| `EXPOSE_LLM_MODELS` | No | If **`true`**, enables **GET `/api/llm/models`** to list ids for your key (default **`false`**). |
 | `OLLAMA_MODEL` | No | Model for Ollama to pull on first start (default: `tinyllama`). |
 | `PRESIDIO_ANALYZER_API_BASE` | No | Used by LiteLLM (default in compose: `http://presidio-analyzer:3000`). |
 | `PRESIDIO_ANONYMIZER_API_BASE` | No | Used by LiteLLM (default in compose: `http://presidio-anonymizer:3000`). |
@@ -96,7 +107,9 @@ CHATBOT_USE_TOOLS=true
 | `ELASTIC_APM_SECRET_TOKEN` | No | APM secret token for authenticated APM Server |
 | `ELASTIC_APM_INSECURE` | No | Set to `true` for self-signed or dev TLS (default: `false`) |
 | `OTEL_SERVICE_NAME` | No | Service name in Kibana (default: `chatbot-service`) |
-| `CHATBOT_USE_TOOLS` | No | Tool-calling agent + `agent_call` in traces (default: `true` in Docker Compose; set `false` if using tinyllama without a tool-capable model) |
+| `CHATBOT_USE_TOOLS` | No | Tool-calling agent + `agent_call` in traces (default **`false`**; set `true` for tool-capable cloud models) |
+| `CHATBOT_PARALLEL_TOOL_CALLS` | No | If **`true`**, omit `parallel_tool_calls=false` on chat requests (OpenAI-style parallel tools). Default **`false`** (sequential tool rounds; more reliable on some LLM gateways). |
+| `WEATHER_PROVIDER` | No | **`open_meteo`** (default): `get_current_weather` uses [Open-Meteo](https://open-meteo.com/) (outbound HTTPS, no key). Allow **`geocoding-api.open-meteo.com`** and **`api.open-meteo.com`** from the app container. **`stub`**: fixed demo temperatures (offline / CI). |
 | `CHATBOT_SYSTEM_INSTRUCTION` | No | Override the default system prompt (brief answers unless the user wants more). |
 
 Replies default to **brief** answers via a built-in system instruction; set `CHATBOT_SYSTEM_INSTRUCTION` to override.
@@ -105,7 +118,7 @@ Replies default to **brief** answers via a built-in system instruction; set `CHA
 
 - **Chat workflow**: each `/api/chat` request is a workflow; the LLM call is a child span.
 - **LLM spans**: provider (OpenAI), model, prompts/completions (if not disabled), token usage, latency.
-- **Tool calls**: when the model uses tools, those appear as part of the trace.
+- **Tool calls**: when the model uses tools, those appear as part of the trace. The **`get_current_weather`** tool uses **Open-Meteo** for live conditions when **`WEATHER_PROVIDER=open_meteo`** (default); the app needs outbound HTTPS to **`geocoding-api.open-meteo.com`** and **`api.open-meteo.com`**. Use **`WEATHER_PROVIDER=stub`** for the previous fixed demo replies without calling the network.
 - **[TRACING.md](TRACING.md)** – Diagram of tracing capabilities: service/OTLP flow, span hierarchy (workflow → tasks → agent_call → chat_completion, tools), and env vars.
 
 To avoid sending prompt/completion content to Elastic (e.g. in production), set:

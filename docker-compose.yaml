@@ -1,6 +1,6 @@
 # Chatbot website + OpenTelemetry Collector → Elastic APM
-# Default: app → LiteLLM (:4000) → Presidio → OpenAI gpt-4o-mini (set OPENAI_API_KEY in .env). tinyllama stays in litellm-config for OPENAI_MODEL=tinyllama.
-# Bypass LiteLLM to Ollama only: OPENAI_API_BASE=http://ollama:11434/v1 (adjust app depends_on if needed).
+# Default app LLM: Elastic LiteLLM prod (OPENAI_API_BASE). Override to http://litellm:4000 for local Presidio+Ollama proxy (see litellm-config.yaml).
+# Ollama direct: OPENAI_API_BASE=http://ollama:11434/v1
 
 services:
   app:
@@ -8,20 +8,24 @@ services:
     ports:
       - "8088:8088"
     environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY:-ollama}
-      - OPENAI_API_BASE=${OPENAI_API_BASE:-http://litellm:4000}
-      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}
+      # Required for default Elastic LiteLLM URL; use `ollama` only for local tinyllama + http://litellm:4000
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_API_BASE=${OPENAI_API_BASE:-https://elastic.litellm-prod.ai}
+      # Hosted Elastic: ids are often prefixed (e.g. llm-gateway/gpt-4.1-mini). List: /v1/models or GET /api/llm/models.
+      - OPENAI_MODEL=${OPENAI_MODEL:-llm-gateway/gpt-4.1-mini}
       - OTEL_SERVICE_NAME=${OTEL_SERVICE_NAME:-chatbot-service}
       - SERVICE_ENVIRONMENT=${SERVICE_ENVIRONMENT:-chatbot}
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
-      # Agent loop + traces (agent_call). Default model supports tools; set false if you switch to tinyllama only.
-      - CHATBOT_USE_TOOLS=${CHATBOT_USE_TOOLS:-true}
+      # Agent/tools: tinyllama often mangles tool JSON—default off. Set true for capable cloud models.
+      - CHATBOT_USE_TOOLS=${CHATBOT_USE_TOOLS:-false}
+      # Weather tool: open_meteo (live, no key) or stub (fixed demo values)
+      - WEATHER_PROVIDER=${WEATHER_PROVIDER:-open_meteo}
       - CHATBOT_SYSTEM_INSTRUCTION=${CHATBOT_SYSTEM_INSTRUCTION:-}
+      - DEBUG_LLM_ERRORS=${DEBUG_LLM_ERRORS:-false}
+      - EXPOSE_LLM_MODELS=${EXPOSE_LLM_MODELS:-false}
     depends_on:
       otel-collector:
         condition: service_started
-      litellm:
-        condition: service_healthy
     restart: unless-stopped
 
   litellm:
@@ -32,7 +36,7 @@ services:
     volumes:
       - ./litellm-config.yaml:/app/config.yaml:ro
     environment:
-      # Required for gpt-4o-mini route in litellm-config.yaml (same as app .env)
+      # OpenAI-backed routes in local litellm-config (e.g. gpt-4.1-mini); optional if only using tinyllama
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       # Container port 3000 (host maps 5002/5001 for local debugging only)
       - PRESIDIO_ANALYZER_API_BASE=http://presidio-analyzer:3000

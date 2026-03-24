@@ -7,6 +7,8 @@ import logging
 import re
 import time
 import uuid
+import urllib.error
+import urllib.request
 from os import getenv
 from pathlib import Path
 
@@ -15,6 +17,10 @@ logger = logging.getLogger(__name__)
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# Fallback when OPENAI_MODEL is unset (direct OpenAI / generic proxies). Hosted Elastic LiteLLM keys often use
+# different model ids—set OPENAI_MODEL to an id from GET /api/llm/models (EXPOSE_LLM_MODELS=true) or curl /v1/models.
+_DEFAULT_OPENAI_MODEL = "gpt-3.5-turbo"
 
 # Must init Traceloop before importing OpenAI so the client is instrumented
 from traceloop.sdk import Traceloop
@@ -39,11 +45,13 @@ from openai import OpenAI
 from openai import APIError as OpenAIAPIError
 from openai import APIStatusError as OpenAIAPIStatusError
 from openai import APIConnectionError as OpenAIAPIConnectionError
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
+
+from app.weather_open_meteo import fetch_current_weather
 
 # Support OpenAI or Ollama (OpenAI-compatible): set OPENAI_API_BASE for Ollama (e.g. http://ollama:11434/v1)
 _api_base = getenv("OPENAI_API_BASE")
@@ -104,6 +112,13 @@ def _chatbot_system_instruction() -> str:
 def _ensure_brevity_system_message(messages: list[dict]) -> list[dict]:
     """Prepend global brevity instruction: merge into first system message or insert a system message at the front."""
     instruction = _chatbot_system_instruction()
+    if _chatbot_tools_enabled():
+        instruction += (
+            " When the user asks about weather, call get_current_weather and answer from its result "
+            "(live data from Open-Meteo; if the tool returns a sentence starting with "
+            '"Current weather (Open-Meteo):", treat that as success and summarize it—do not apologize '
+            "or say you cannot look up the weather.)"
+        )
     if not messages:
         return [{"role": "system", "content": instruction}]
     out = list(messages)
@@ -135,11 +150,15 @@ TOOLS = [
 ]
 
 
-@tool(name="get_current_weather")
-def get_current_weather(location: str, unit: str = "fahrenheit") -> str:
-    """Tool: return current weather for a location. Stub: returns Texas weather when location is in Texas."""
+def _weather_stub_reply(location: str, unit: str) -> str:
+    """Fixed demo weather when WEATHER_PROVIDER=stub (offline / tests)."""
     location_lower = (location or "").strip().lower()
-    if "texas" in location_lower or "tx" in location_lower or location_lower in ("austin", "houston", "dallas", "san antonio"):
+    if "texas" in location_lower or "tx" in location_lower or location_lower in (
+        "austin",
+        "houston",
+        "dallas",
+        "san antonio",
+    ):
         temp_f = 88
         temp_c = 31
         conditions = "Sunny and warm"
@@ -149,6 +168,20 @@ def get_current_weather(location: str, unit: str = "fahrenheit") -> str:
     if unit == "celsius":
         return "Clear, 22°C."
     return "Clear, 72°F."
+
+
+@tool(name="get_current_weather")
+def get_current_weather(location: str, unit: str = "fahrenheit") -> str:
+    """Tool: current weather for a location (Open-Meteo live, or stub if WEATHER_PROVIDER=stub)."""
+    provider = (getenv("WEATHER_PROVIDER") or "open_meteo").strip().lower()
+    if provider == "stub":
+        u = unit if unit in ("celsius", "fahrenheit") else "fahrenheit"
+        return _weather_stub_reply(location, u)
+    try:
+        return fetch_current_weather(location, unit)
+    except Exception:
+        logger.exception("get_current_weather (Open-Meteo) failed")
+        return "Could not fetch current weather right now. Please try again later."
 
 
 # Map tool names to callables for the agent loop
@@ -161,9 +194,12 @@ def _chatbot_tools_enabled() -> bool:
 
 
 def _requests_through_litellm() -> bool:
-    """True when the OpenAI client targets LiteLLM (Presidio guardrail runs there pre_call)."""
+    """True when the OpenAI client targets the local Compose LiteLLM proxy (Presidio pre_call in litellm-config)."""
     base = (getenv("OPENAI_API_BASE") or "").strip().lower()
-    return bool(base and "litellm" in base)
+    if not base:
+        return False
+    # Hosted e.g. elastic.litellm-prod.ai is LiteLLM but not our Presidio-in-docker setup
+    return "litellm:4000" in base or "localhost:4000" in base or "127.0.0.1:4000" in base
 
 
 def _guardrail_trace_node() -> dict:
@@ -201,14 +237,24 @@ def _parse_tool_arguments(raw_args) -> dict:
     if isinstance(raw_args, list) and raw_args and isinstance(raw_args[0], dict):
         return raw_args[0]
     if isinstance(raw_args, str):
+        s = raw_args.strip()
         try:
-            parsed = json.loads(raw_args)
+            parsed = json.loads(s)
             if isinstance(parsed, dict):
                 return parsed
             if isinstance(parsed, list) and parsed and isinstance(parsed[0], dict):
                 return parsed[0]
         except json.JSONDecodeError:
             pass
+        # Some gateways/models return near-JSON or extra text — recover location/unit if present
+        m = re.search(r'"location"\s*:\s*"((?:[^"\\]|\\.)*)"', s)
+        if m:
+            loc = m.group(1).replace("\\n", " ").replace('\\"', '"').replace("\\\\", "\\")
+            out = {"location": loc}
+            um = re.search(r'"unit"\s*:\s*"([^"]+)"', s)
+            if um and um.group(1).lower() in ("celsius", "fahrenheit"):
+                out["unit"] = um.group(1).lower()
+            return out
     return {}
 
 
@@ -220,22 +266,96 @@ def _looks_like_schema(obj: dict) -> bool:
     )
 
 
+def _user_text_is_weather_related(content: str) -> bool:
+    """True if the user message is plausibly asking for weather (used for location inference)."""
+    c = (content or "").lower()
+    return bool(
+        "weather" in c
+        or "temperature" in c
+        or "forecast" in c
+        or "austin" in c
+        or "houston" in c
+        or "dallas" in c
+        or ("texas" in c and len(c) < 200)
+    )
+
+
+# Longer aliases first so "san antonio" wins over "antonio" if extended later
+_TEXAS_CITY_QUALIFIED: tuple[tuple[str, str], ...] = (
+    ("san antonio", "San Antonio, Texas, United States"),
+    ("fort worth", "Fort Worth, Texas, United States"),
+    ("el paso", "El Paso, Texas, United States"),
+    ("corpus christi", "Corpus Christi, Texas, United States"),
+    ("mckinney", "McKinney, Texas, United States"),
+    ("brownsville", "Brownsville, Texas, United States"),
+    ("amarillo", "Amarillo, Texas, United States"),
+    ("garland", "Garland, Texas, United States"),
+    ("irving", "Irving, Texas, United States"),
+    ("laredo", "Laredo, Texas, United States"),
+    ("lubbock", "Lubbock, Texas, United States"),
+    ("plano", "Plano, Texas, United States"),
+    ("arlington", "Arlington, Texas, United States"),
+    ("frisco", "Frisco, Texas, United States"),
+    ("dallas", "Dallas, Texas, United States"),
+    ("houston", "Houston, Texas, United States"),
+    ("austin", "Austin, Texas, United States"),
+)
+
+
+def _texas_city_qualified_from_user_text(text: str) -> str | None:
+    """Map a major Texas city mention to an unambiguous geocoding query."""
+    tl = (text or "").lower()
+    for alias, qualified in _TEXAS_CITY_QUALIFIED:
+        if re.search(rf"\b{re.escape(alias)}\b", tl):
+            return qualified
+    return None
+
+
+def _extract_location_hint(text: str) -> str | None:
+    """Pull a place name from natural language (e.g. 'weather in Paris' -> 'Paris')."""
+    t = (text or "").strip()
+    if not t:
+        return None
+    patterns = (
+        r"(?:weather|forecast|temperature)(?:\s+is|\s+like)?\s+(?:in|for|at)\s+([^?.!\n]+)",
+        r"(?:what(?:'s| is)|how(?:'s| is))\s+the\s+weather\s+(?:in|for|at)\s+([^?.!\n]+)",
+        r"\b(?:in|for|at)\s+([A-Za-z0-9][^?.!\n]{0,120})",
+    )
+    for pat in patterns:
+        m = re.search(pat, t, re.I)
+        if m:
+            loc = m.group(1).strip().rstrip("?.!, ")
+            # Drop trailing filler like "today" / "right now"
+            loc = re.sub(r"\s+(today|now|right\s+now|please)\s*$", "", loc, flags=re.I).strip()
+            if len(loc) >= 2:
+                return loc[:200]
+    return None
+
+
 def _infer_weather_location(args: dict, messages: list[dict]) -> dict:
     """When the model returns schema instead of args, infer location from the last user message."""
     out = dict(args)
+    last_user_content = ""
     for msg in reversed(messages):
         if msg.get("role") == "user":
-            content = (msg.get("content") or "").strip()
-            if content and ("weather" in content.lower() or "austin" in content.lower() or "texas" in content.lower()):
-                if "austin" in content.lower():
-                    out["location"] = "Austin, Texas"
-                elif "texas" in content.lower():
-                    out["location"] = "Texas"
-                else:
-                    out["location"] = content[:200]
-                break
-        if msg.get("role") == "assistant":
+            last_user_content = (msg.get("content") or "").strip()
             break
+    if last_user_content and _user_text_is_weather_related(last_user_content):
+        tx_place = _texas_city_qualified_from_user_text(last_user_content)
+        if tx_place:
+            out["location"] = tx_place
+        else:
+            hint = _extract_location_hint(last_user_content)
+            if hint:
+                out["location"] = hint
+            elif "austin" in last_user_content.lower():
+                out["location"] = "Austin, Texas, United States"
+            elif "texas" in last_user_content.lower() or re.search(
+                r"\btx\b", last_user_content.lower()
+            ):
+                out["location"] = "Texas"
+            else:
+                out["location"] = last_user_content[:200]
     out.setdefault("location", "Texas")
     return out
 
@@ -263,18 +383,7 @@ def _looks_like_raw_tool_schema_in_reply(text: str) -> bool:
 def _user_asks_about_weather(messages: list[dict]) -> bool:
     for msg in reversed(messages):
         if msg.get("role") == "user":
-            c = (msg.get("content") or "").lower()
-            return bool(
-                "weather" in c
-                or "temperature" in c
-                or "forecast" in c
-                or "austin" in c
-                or "houston" in c
-                or "dallas" in c
-                or ("texas" in c and len(c) < 200)
-            )
-        if msg.get("role") == "assistant":
-            break
+            return _user_text_is_weather_related(msg.get("content") or "")
     return False
 
 
@@ -302,7 +411,7 @@ def _sanitize_user_facing_reply(content: str, messages: list[dict]) -> str:
     return (
         "The model replied with tool metadata instead of a normal answer—common with small local models when "
         "tool-calling is enabled. Set CHATBOT_USE_TOOLS=false in .env or docker-compose, rebuild the app, "
-        "and try again. (Enable tools only for capable models like GPT-4.)"
+        "and try again. (Enable tools only for tool-capable cloud models.)"
     )
 
 
@@ -589,17 +698,17 @@ def generate_response(
     final_messages = _ensure_brevity_system_message(final_messages)
     span.set_attribute("prompt.num_messages", len(final_messages))
     if trace_meta is not None:
-        model = getenv("OPENAI_MODEL", "gpt-4o-mini")
+        model = _openai_model()
         rag = f"{len(context)} RAG chunk(s) in prompt" if context else "no RAG chunks"
         tools = "tools on" if _chatbot_tools_enabled() else "tools off"
         base = f"model={model} · {len(final_messages)} messages · {rag} · {tools}"
         if _requests_through_litellm():
             base += (
-                " · Nested below: Presidio pre_call (guardrail) runs inside LiteLLM before each "
+                " · Nested below: Presidio pre_call (guardrail) runs inside local LiteLLM before each "
                 "provider call—order is parent row first (this task), then children in call order."
             )
         else:
-            base += " · No LiteLLM hop; presidio_pii_guardrail rows are omitted."
+            base += " · Remote or direct LLM base URL; local presidio_pii_guardrail rows omitted."
         trace_meta["context"] = base
     if _chatbot_tools_enabled():
         return run_agent(final_messages, trace_children=trace_children)
@@ -643,11 +752,15 @@ def _chat_completion(
         trace_children.append(_guardrail_trace_node())
     start = time.perf_counter()
     kwargs: dict = {
-        "model": getenv("OPENAI_MODEL", "gpt-4o-mini"),
+        "model": _openai_model(),
         "messages": messages,
-        "tools": TOOLS if _chatbot_tools_enabled() else None,
-        "tool_choice": "auto" if _chatbot_tools_enabled() else None,
     }
+    if _chatbot_tools_enabled():
+        kwargs["tools"] = TOOLS
+        kwargs["tool_choice"] = "auto"
+        # Default off: some gateways handle sequential tool rounds more reliably than parallel
+        if getenv("CHATBOT_PARALLEL_TOOL_CALLS", "false").lower() not in ("1", "true", "yes"):
+            kwargs["parallel_tool_calls"] = False
     extra = _litellm_extra_headers()
     if extra:
         kwargs["extra_headers"] = extra
@@ -666,7 +779,7 @@ def _chat_completion(
             "output_tokens": getattr(u, "completion_tokens", None) or getattr(u, "output_tokens", None),
             "total_tokens": getattr(u, "total_tokens", None),
         }
-    model = getenv("OPENAI_MODEL", "gpt-4o-mini")
+    model = _openai_model()
     _cc_ctx = f"model={model} · request_messages={len(messages)}"
     if _chatbot_tools_enabled():
         _cc_ctx += " · OpenAI tools=auto (get_current_weather)"
@@ -711,6 +824,17 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/api/llm/models")
+def api_llm_models():
+    """
+    List model ids your API key can use on the configured OPENAI_API_BASE (OpenAI /v1/models shape).
+    Enable with EXPOSE_LLM_MODELS=true (off by default).
+    """
+    if getenv("EXPOSE_LLM_MODELS", "").lower() not in ("1", "true", "yes"):
+        raise HTTPException(status_code=404, detail="Not found")
+    return _fetch_upstream_model_catalog()
+
+
 def _openai_error_detail_for_log(exc: OpenAIAPIError) -> str:
     """Short text from OpenAI SDK error for server logs (truncate; avoid huge bodies)."""
     resp = getattr(exc, "response", None)
@@ -726,6 +850,112 @@ def _openai_error_detail_for_log(exc: OpenAIAPIError) -> str:
     return str(exc)[:800]
 
 
+def _openai_model() -> str:
+    explicit = (getenv("OPENAI_MODEL") or "").strip()
+    if explicit:
+        return explicit
+    return _DEFAULT_OPENAI_MODEL
+
+
+def _upstream_error_user_hint(exc: OpenAIAPIError) -> str:
+    """Extract a short provider/LiteLLM message for the chat UI (OpenAI + LiteLLM JSON shapes)."""
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        data = body
+    else:
+        raw = _openai_error_detail_for_log(exc)
+        if not raw:
+            return ""
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return ""
+    if not isinstance(data, dict):
+        return ""
+    err = data.get("error")
+    # LiteLLM often returns {"error": "plain string message..."}
+    if isinstance(err, str) and err.strip():
+        return err.strip().replace("\n", " ")[:400]
+    if isinstance(err, dict):
+        for k in ("message", "msg"):
+            v = err.get(k)
+            if isinstance(v, str) and v.strip():
+                return v.strip().replace("\n", " ")[:400]
+    m = data.get("message")
+    if isinstance(m, str) and m.strip():
+        return m.strip().replace("\n", " ")[:400]
+    return ""
+
+
+def _llm_models_list_urls() -> list[str]:
+    """Try common OpenAI-compatible model catalog paths (LiteLLM uses /v1/models)."""
+    base = (getenv("OPENAI_API_BASE") or "").strip().rstrip("/")
+    if not base:
+        return []
+    if base.endswith("/v1"):
+        return [f"{base}/models"]
+    return [f"{base}/v1/models", f"{base}/models"]
+
+
+def _fetch_upstream_model_catalog() -> dict:
+    """GET models from the configured LLM base (Bearer OPENAI_API_KEY)."""
+    key = (getenv("OPENAI_API_KEY") or "").strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="OPENAI_API_KEY is not set.")
+    urls = _llm_models_list_urls()
+    if not urls:
+        raise HTTPException(
+            status_code=400,
+            detail="OPENAI_API_BASE is not set; cannot list models for a custom endpoint.",
+        )
+    last_err: str | None = None
+    for url in urls:
+        req = urllib.request.Request(
+            url,
+            headers={"Authorization": f"Bearer {key}", "Accept": "application/json"},
+            method="GET",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=25) as resp:
+                raw = resp.read().decode()
+                return json.loads(raw)
+        except urllib.error.HTTPError as e:
+            try:
+                body = e.read().decode()[:500]
+            except Exception:
+                body = str(e)
+            last_err = f"{url} -> HTTP {e.code} {body}"
+            logger.warning("List models failed: %s", last_err)
+        except Exception as e:
+            last_err = f"{url} -> {e}"
+            logger.warning("List models failed: %s", last_err)
+    raise HTTPException(
+        status_code=502,
+        detail=last_err or "Could not reach the LLM /models endpoint.",
+    )
+
+
+def _is_likely_content_policy_block(exc: OpenAIAPIStatusError) -> bool:
+    """True only when upstream body suggests moderation/content policy—not every HTTP 400."""
+    d = _openai_error_detail_for_log(exc).lower()
+    if not d:
+        return False
+    keywords = (
+        "content_policy",
+        "content policy",
+        "content_filter",
+        "moderation",
+        "safety",
+        "blocked by",
+        "disallowed",
+        "violation",
+        "inappropriate",
+        "personal information",
+        "guardrail",
+    )
+    return any(k in d for k in keywords)
+
+
 def _log_llm_upstream_error(exc: BaseException, where: str) -> None:
     if isinstance(exc, OpenAIAPIStatusError):
         code = getattr(exc, "status_code", None)
@@ -739,6 +969,12 @@ def _log_llm_upstream_error(exc: BaseException, where: str) -> None:
 def _user_message_for_status_error(exc: OpenAIAPIStatusError) -> str:
     code = getattr(exc, "status_code", None) or 0
     detail = _openai_error_detail_for_log(exc).lower()
+    if code == 401:
+        return (
+            "LLM authentication failed (HTTP 401). Check OPENAI_API_KEY and that OPENAI_API_BASE "
+            "matches your provider (e.g. https://elastic.litellm-prod.ai). "
+            "Set DEBUG_LLM_ERRORS=true for a short debug hint."
+        )
     if code == 429:
         return "The language model is rate-limited. Please wait a moment and try again."
     if code == 503:
@@ -748,6 +984,22 @@ def _user_message_for_status_error(exc: OpenAIAPIStatusError) -> str:
             "Our PII safety check is temporarily unavailable. Please try again shortly. "
             "If this continues, verify Presidio services are reachable from LiteLLM (container port 3000)."
         )
+    if code == 400:
+        # Most 400s are bad model, auth scope, or tools/schema—not "you said something wrong"
+        hint = _upstream_error_user_hint(exc)
+        base = (
+            "The language model rejected the request (HTTP 400). Common causes: the model name is not enabled "
+            "on this endpoint, the API key cannot access that model, or tool-calling failed. "
+            "Try CHATBOT_USE_TOOLS=false for a plain answer. Set DEBUG_LLM_ERRORS=true for a short server hint."
+        )
+        if hint:
+            base = f"{base} Details: {hint}"
+        if "invalid model" in detail or "model name" in detail:
+            base += (
+                " To see allowed model ids: set EXPOSE_LLM_MODELS=true, restart the app, then GET /api/llm/models "
+                "(or curl OPENAI_API_BASE/v1/models with Authorization: Bearer your key)."
+            )
+        return base
     return "The language model is temporarily unavailable. Please try again later."
 
 
@@ -802,15 +1054,14 @@ def chat(req: ChatRequest, request: Request):
     try:
         reply, usage = handle_chat(query, messages, name=name, trace_root=trace_root)
     except OpenAIAPIStatusError as e:
-        if getattr(e, "status_code", None) == 400:
-            return ChatResponse(
-                message="Request blocked by content policy. Please avoid sharing sensitive personal information.",
-                input_tokens=None,
-                output_tokens=None,
-                total_tokens=None,
-            )
         _log_llm_upstream_error(e, "chat")
-        msg = _user_message_for_status_error(e) + _debug_llm_error_suffix(e)
+        if getattr(e, "status_code", None) == 400 and _is_likely_content_policy_block(e):
+            msg = (
+                "Request blocked by content policy. Please avoid sharing sensitive personal information."
+                + _debug_llm_error_suffix(e)
+            )
+        else:
+            msg = _user_message_for_status_error(e) + _debug_llm_error_suffix(e)
         return ChatResponse(
             message=msg,
             input_tokens=None,

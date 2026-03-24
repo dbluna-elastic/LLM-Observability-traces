@@ -1,6 +1,6 @@
 # LiteLLM proxy: Presidio PII guardrail (pre_call) then route by model_name.
 # Presidio listens on port 3000 inside Docker; use :3000 for service DNS (not host ports 5002/5001).
-# gpt-4o-mini: set OPENAI_API_KEY on the litellm service (see docker-compose).
+# OpenAI routes (gpt-*): set OPENAI_API_KEY on the litellm service (see docker-compose).
 # tinyllama: local Ollama; no OpenAI key required for that route.
 
 litellm_settings:
@@ -8,9 +8,9 @@ litellm_settings:
   forward_traceparent_to_llm_provider: true
 
 model_list:
-  - model_name: gpt-4o-mini
+  - model_name: gpt-4.1-mini
     litellm_params:
-      model: gpt-4o-mini
+      model: gpt-4.1-mini
       api_key: "os.environ/OPENAI_API_KEY"
 
   - model_name: tinyllama
