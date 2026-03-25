@@ -528,6 +528,18 @@
     #nameInput::placeholder {
       color: var(--text-muted);
     }
+
+    #categorySelect {
+      width: 100%;
+      padding: 0.55rem 0.85rem;
+      font-family: inherit;
+      font-size: 1.02rem;
+      color: var(--text);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      margin-bottom: 0.5rem;
+    }
   </style>
 </head>
 <body>
@@ -549,6 +561,10 @@
         <span id="runTestsProgress"></span>
       </div>
       <form id="form">
+        <div class="name-wrap">
+          <label for="categorySelect">Use case</label>
+          <select id="categorySelect" aria-label="Use case category"></select>
+        </div>
         <div class="name-wrap">
           <label for="nameInput">Name</label>
           <input type="text" id="nameInput" placeholder="Your name (optional)" />
@@ -586,6 +602,38 @@
         'X-Session-ID': chatSessionId,
       };
     }
+
+    const FALLBACK_CATEGORIES = [
+      'Technical', 'Content', 'Sales', 'Customer Success', 'Product',
+      'Services and Consulting', 'Marketing', 'Legal', 'Operations',
+      'Human Capital', 'Other',
+    ];
+
+    function fillCategorySelect() {
+      const sel = document.getElementById('categorySelect');
+      if (!sel) return;
+      const render = (arr) => {
+        const prev = sel.value;
+        sel.innerHTML = '';
+        arr.forEach((c) => {
+          const o = document.createElement('option');
+          o.value = c;
+          o.textContent = c;
+          sel.appendChild(o);
+        });
+        if (prev && arr.includes(prev)) sel.value = prev;
+      };
+      render(FALLBACK_CATEGORIES);
+      fetch(`${API_BASE}/api/prompt/categories`)
+        .then((r) => (r.ok ? r.json() : Promise.reject()))
+        .then((j) => {
+          const list = Array.isArray(j.categories) ? j.categories : [];
+          if (list.length) render(list);
+        })
+        .catch(() => {});
+    }
+
+    fillCategorySelect();
 
     function startNewChat() {
       chatSessionId = crypto.randomUUID();
@@ -1010,11 +1058,13 @@
         const messages = collectMessagesForApi();
 
         const nameValue = document.getElementById('nameInput').value.trim() || undefined;
+        const categoryValue = document.getElementById('categorySelect').value || 'Other';
         const res = await fetch(`${API_BASE}/api/chat`, {
           method: 'POST',
           headers: newChatHeaders(),
           body: JSON.stringify({
             messages: messages.map(m => ({ role: m.role, content: m.content })),
+            category: categoryValue,
             name: nameValue
           })
         });
@@ -1079,10 +1129,15 @@
         const traceBodyEl = turn.traceBodyEl;
         try {
           const nameValue = document.getElementById('nameInput').value.trim() || undefined;
+          const categoryValue = document.getElementById('categorySelect').value || 'Other';
           const res = await fetch(`${API_BASE}/api/chat`, {
             method: 'POST',
             headers: newChatHeaders(),
-            body: JSON.stringify({ messages: [{ role: 'user', content: q.question }], name: nameValue })
+            body: JSON.stringify({
+              messages: [{ role: 'user', content: q.question }],
+              category: categoryValue,
+              name: nameValue,
+            })
           });
           if (!res.ok) {
             const err = await res.json().catch(() => ({}));

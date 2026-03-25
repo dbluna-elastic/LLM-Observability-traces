@@ -83,10 +83,21 @@ When **PROPAGATE_TRACE_TO_LITELLM=true**, the same trace in Elastic also include
 
 | Component        | Source              | Spans / attributes you get |
 |-----------------|---------------------|----------------------------|
-| App             | Traceloop + OTEL    | Workflow/task/tool spans; `llm.*` and token usage from OpenAI instrumentation; `agent_call` with `llm.agent`, `agent.turns`; custom attributes (e.g. `prompt.template`, `retrieval.num_results`). |
+| App             | Traceloop + OTEL    | Workflow/task/tool spans; `llm.*` and token usage from OpenAI instrumentation; `agent_call` with `llm.agent`, `agent.turns`; custom attributes (e.g. `prompt.template`, `retrieval.num_results`, **`prompt.category`** / **`chat.use_case`** per chat). |
 | LiteLLM proxy   | LiteLLM OTEL callback | Request span (e.g. "Received Proxy Server Request"); request/response as attributes when enabled. |
 | Collector       | OTLP pipeline       | Batched traces/metrics/logs; no `service.name` overwrite, so both `chatbot-service` and `litellm-proxy` appear in Elastic. |
 | Elastic         | APM Server          | Services, transactions, spans, and (if enabled) token metrics in Observability → APM. |
+
+### Use case (prompt category)
+
+Each `POST /api/chat` sends a validated **use case** (`category` in the JSON body; see `GET /api/prompt/categories`). It appears in four places:
+
+| Where | What to look for |
+|-------|------------------|
+| **Elastic / span attributes** | `prompt.category` and `chat.use_case` on the HTTP/request span, plus flat aliases `prompt_category` and `use_case` for easier filtering; span event **`chat.request`** with `prompt.category`. |
+| **App logs** | `chat request use_case=... session_id=... trace_id=... turn=...` — match `trace_id` (32 hex chars) to the trace in APM. |
+| **Web UI Traceflow** | The `handle_chat` row’s context line: `use case: … · session=…` (from the `traceflow` object in the chat API response). |
+| **`user.session_id`** | Same span attribute as the session header `X-Session-ID` (or server-generated UUID). |
 
 ---
 

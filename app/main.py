@@ -52,8 +52,9 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
+from app.categories import PROMPT_CATEGORIES
 from app.deepeval_score import score_agent_task_completion, score_chat_turn
 from app.weather_open_meteo import fetch_current_weather
 
@@ -120,8 +121,20 @@ class ChatMessage(BaseModel):
 
 class ChatRequest(BaseModel):
     messages: list[ChatMessage]
-    category: str | None = None  # optional, e.g. "code_review", "general"
+    # Use-case label for tracing (prompt.category). Default Other; must be one of PROMPT_CATEGORIES.
+    category: str = "Other"
     name: str | None = None  # optional; when set, tool + task personalize the prompt
+
+    @field_validator("category", mode="before")
+    @classmethod
+    def _validate_prompt_category(cls, v):
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return "Other"
+        s = str(v).strip()
+        if s not in PROMPT_CATEGORIES:
+            allowed = ", ".join(PROMPT_CATEGORIES)
+            raise ValueError(f"Invalid category {s!r}. Allowed: {allowed}")
+        return s
 
 
 class ChatResponse(BaseModel):
@@ -1033,6 +1046,12 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/api/prompt/categories")
+def api_prompt_categories():
+    """Allowed values for ChatRequest.category (use-case taxonomy for OTEL prompt.category)."""
+    return {"categories": list(PROMPT_CATEGORIES)}
+
+
 @app.get("/api/llm/models")
 def api_llm_models():
     """
@@ -1240,12 +1259,27 @@ def chat(req: ChatRequest, request: Request):
     messages = [{"role": m.role, "content": m.content} for m in req.messages]
     turn_number = sum(1 for m in messages if m.get("role") == "user")
     session_id = request.headers.get("X-Session-ID") or str(uuid.uuid4())
-    prompt_category = req.category or "general"
+    prompt_category = req.category
 
     span = trace.get_current_span()
     span.set_attribute("user.session_id", session_id)
     span.set_attribute("conversation.turn", turn_number)
     span.set_attribute("prompt.category", prompt_category)
+    span.set_attribute("chat.use_case", prompt_category)
+    # Flat aliases improve discoverability in backends that normalize dotted attribute names.
+    span.set_attribute("prompt_category", prompt_category)
+    span.set_attribute("use_case", prompt_category)
+    span.add_event("chat.request", {"prompt.category": prompt_category})
+
+    sc = span.get_span_context()
+    trace_id_hex = format(sc.trace_id, "032x") if sc.is_valid else ""
+    logger.info(
+        "chat request use_case=%r session_id=%s trace_id=%s turn=%s",
+        prompt_category,
+        session_id,
+        trace_id_hex or "-",
+        turn_number,
+    )
 
     query = ""
     for m in reversed(messages):
@@ -1254,11 +1288,13 @@ def chat(req: ChatRequest, request: Request):
             break
 
     name = req.name or None
+    session_short = session_id[:8] if len(session_id) >= 8 else session_id
     trace_root: dict = {
         "name": "handle_chat",
         "kind": "WORKFLOW",
         "duration_ms": 0.0,
         "children": [],
+        "context": f"use case: {prompt_category} · session={session_short}",
     }
     try:
         reply, usage, agent_tools = handle_chat(query, messages, name=name, trace_root=trace_root)

@@ -124,7 +124,7 @@ The app image installs **DeepEval** ([`requirements-eval.txt`](requirements-eval
 
 ## What gets traced
 
-- **Chat workflow**: each `/api/chat` request is a workflow; the LLM call is a child span.
+- **Chat workflow**: each `/api/chat` request is a workflow; the LLM call is a child span. Optional **`category`** on the JSON body is validated against a fixed use-case list (default **`Other`**) and exported as OTEL **`prompt.category`**. **`GET /api/prompt/categories`** returns the allowed labels for UIs.
 - **LLM spans**: provider (OpenAI), model, prompts/completions (if not disabled), token usage, latency.
 - **Tool calls**: when the model uses tools, those appear as part of the trace. The **`get_current_weather`** tool uses **Open-Meteo** for live conditions when **`WEATHER_PROVIDER=open_meteo`** (default); the app needs outbound HTTPS to **`geocoding-api.open-meteo.com`** and **`api.open-meteo.com`**. Use **`WEATHER_PROVIDER=stub`** for the previous fixed demo replies without calling the network.
 - **[TRACING.md](TRACING.md)** – Diagram of tracing capabilities: service/OTLP flow, span hierarchy (workflow → tasks → agent_call → chat_completion, tools), and env vars.
