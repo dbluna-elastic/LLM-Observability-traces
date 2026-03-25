@@ -358,6 +358,45 @@
       font-family: 'JetBrains Mono', monospace;
     }
 
+    /* DeepEval: same row “bubble” language as traceflow (assistant column) */
+    .msg .deeval-section {
+      margin-top: 0.65rem;
+      padding-top: 0.6rem;
+      border-top: 1px solid var(--border);
+    }
+
+    .msg .deeval-section-header {
+      font-size: 0.7rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--text-muted);
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 0.4rem;
+      margin-bottom: 0.45rem;
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    .msg .deeval-row.tf-row {
+      border-color: rgba(124, 58, 237, 0.32);
+      background: rgba(15, 15, 18, 0.75);
+    }
+
+    .msg .deeval-row.deeval-nested {
+      margin-left: 10px;
+      border-color: rgba(124, 58, 237, 0.18);
+    }
+
+    .msg .deeval-row .tf-gantt-fill.deeval-gantt-fill {
+      background: linear-gradient(90deg, rgba(124, 58, 237, 0.95), #a78bfa);
+    }
+
+    .tf-kind-metric { background: rgba(124, 58, 237, 0.35); color: #ddd6fe; }
+    .tf-kind-eval-error { background: rgba(190, 18, 60, 0.35); color: #fecdd3; }
+    .tf-kind-eval-skip { background: rgba(82, 82, 91, 0.45); color: #d4d4d8; }
+    .tf-kind-goal { background: rgba(14, 116, 144, 0.35); color: #a5f3fc; }
+    .tf-kind-outcome { background: rgba(21, 128, 61, 0.35); color: #bbf7d0; }
+
     .form-wrap {
       position: sticky;
       bottom: 0;
@@ -628,6 +667,77 @@
       return 'tf-kind-task';
     }
 
+    function deevalKindBadgeClass(kind) {
+      const k = (kind || '').toUpperCase();
+      if (k === 'METRIC') return 'tf-kind-metric';
+      if (k === 'ERROR') return 'tf-kind-eval-error';
+      if (k === 'SKIP') return 'tf-kind-eval-skip';
+      if (k === 'GOAL') return 'tf-kind-goal';
+      if (k === 'OUTCOME') return 'tf-kind-outcome';
+      return 'tf-kind-metric';
+    }
+
+    /**
+     * One traceflow-style row inside the assistant message (name + kind badge + optional score bar).
+     */
+    function appendDeevalRow(container, opts) {
+      const {
+        name,
+        kind = 'METRIC',
+        rightText = '—',
+        score01 = null,
+        context = '',
+        nested = false,
+        titleTip = '',
+      } = opts;
+      const row = document.createElement('div');
+      row.className = `tf-row tf-depth-0 deeval-row${nested ? ' deeval-nested' : ''}`;
+      if (titleTip) row.title = titleTip;
+
+      const main = document.createElement('div');
+      main.className = 'tf-row-main';
+      const titleLine = document.createElement('div');
+      titleLine.className = 'tf-title-line';
+      const nameEl = document.createElement('span');
+      nameEl.className = 'tf-name';
+      nameEl.textContent = name || '—';
+      if (titleTip) nameEl.title = titleTip;
+      const badge = document.createElement('span');
+      badge.className = `tf-kind ${deevalKindBadgeClass(kind)}`;
+      badge.textContent = kind;
+      titleLine.appendChild(nameEl);
+      titleLine.appendChild(badge);
+      main.appendChild(titleLine);
+      if (context) {
+        const ctxEl = document.createElement('div');
+        ctxEl.className = 'tf-context';
+        ctxEl.textContent = context;
+        main.appendChild(ctxEl);
+      }
+
+      const dur = document.createElement('span');
+      dur.className = 'tf-dur';
+      dur.textContent = rightText;
+
+      const gantt = document.createElement('div');
+      gantt.className = 'tf-gantt';
+      const fill = document.createElement('div');
+      fill.className = 'tf-gantt-fill deeval-gantt-fill';
+      if (score01 != null && Number.isFinite(Number(score01))) {
+        const pct = Math.max(0.5, Math.min(100, Number(score01) * 100));
+        fill.style.left = '0%';
+        fill.style.width = `${pct}%`;
+      } else {
+        gantt.style.display = 'none';
+      }
+      gantt.appendChild(fill);
+
+      row.appendChild(main);
+      row.appendChild(dur);
+      row.appendChild(gantt);
+      container.appendChild(row);
+    }
+
     function formatStepDuration(kind, ms) {
       const k = (kind || '').toUpperCase();
       if (k === 'GUARDRAIL' && (!ms || ms === 0)) return 'pre-call';
@@ -757,67 +867,126 @@
       errorEl.textContent = msg || '';
     }
 
-    /** Show DeepEval answer_relevancy + optional task_completion (DEEPEVAL_SCORE_CHAT / agent tools). */
+    /** DeepEval as traceflow-like bubbles on the assistant side. */
     function appendEvaluation(assistantDiv, ev) {
       if (!ev || typeof ev !== 'object') return;
-      if (ev.skipped && !ev.task_completion) {
-        const line = document.createElement('div');
-        line.className = 'tokens';
-        line.textContent = 'Eval: skipped';
-        assistantDiv.appendChild(line);
+
+      const tc = ev.task_completion;
+      const hasTc = tc && typeof tc === 'object';
+      if (ev.skipped && !hasTc) {
+        const wrap = document.createElement('div');
+        wrap.className = 'deeval-section';
+        const head = document.createElement('div');
+        head.className = 'deeval-section-header';
+        head.textContent = 'DeepEval';
+        wrap.appendChild(head);
+        appendDeevalRow(wrap, {
+          name: 'answer_relevancy',
+          kind: 'SKIP',
+          rightText: 'skipped',
+          score01: null,
+          context: ev.reason ? String(ev.reason).slice(0, 600) : 'No scoring run',
+        });
+        assistantDiv.appendChild(wrap);
         return;
       }
+
+      const wrap = document.createElement('div');
+      wrap.className = 'deeval-section';
+      const head = document.createElement('div');
+      head.className = 'deeval-section-header';
+      head.textContent = 'DeepEval';
+      wrap.appendChild(head);
+
       if (ev.error && ev.score == null && !ev.skipped) {
-        const errLine = document.createElement('div');
-        errLine.className = 'tokens';
-        errLine.textContent = 'Eval (answer relevancy) error: ' + String(ev.error).slice(0, 240);
-        assistantDiv.appendChild(errLine);
+        appendDeevalRow(wrap, {
+          name: 'answer_relevancy',
+          kind: 'ERROR',
+          rightText: 'failed',
+          score01: null,
+          context: String(ev.error).slice(0, 800),
+          titleTip: String(ev.error).slice(0, 2000),
+        });
       }
+
       if (ev.score != null && ev.metric !== 'task_completion') {
-        const line = document.createElement('div');
-        line.className = 'tokens';
         const n = typeof ev.score === 'number' ? ev.score.toFixed(3) : String(ev.score);
-        let s = 'DeepEval answer relevancy: ' + n;
-        if (ev.success === false) s += ' (below threshold)';
-        if (ev.judge_model) s += ' · judge: ' + ev.judge_model;
-        line.textContent = s;
-        assistantDiv.appendChild(line);
+        const parts = [];
+        if (ev.success === false) parts.push('below threshold');
+        if (ev.judge_model) parts.push('judge: ' + ev.judge_model);
+        let ctx = '';
+        if (ev.reason) ctx = String(ev.reason).slice(0, 600) + (String(ev.reason).length > 600 ? '…' : '');
+        if (parts.length) {
+          ctx = (ctx ? ctx + '\n\n' : '') + parts.join(' · ');
+        }
+        appendDeevalRow(wrap, {
+          name: 'answer_relevancy',
+          kind: 'METRIC',
+          rightText: n,
+          score01: Number(ev.score),
+          context: ctx,
+        });
       }
-      if (ev.reason && ev.metric !== 'task_completion') {
-        const r = document.createElement('div');
-        r.className = 'tokens';
-        r.style.marginTop = '0.25rem';
-        r.style.fontSize = '0.78rem';
-        const rs = String(ev.reason);
-        r.textContent = rs.slice(0, 500) + (rs.length > 500 ? '…' : '');
-        assistantDiv.appendChild(r);
-      }
-      const tc = ev.task_completion;
-      if (tc && typeof tc === 'object') {
-        const tcLine = document.createElement('div');
-        tcLine.className = 'tokens';
-        tcLine.style.marginTop = '0.35rem';
+
+      if (hasTc) {
         if (tc.error) {
-          tcLine.textContent = 'DeepEval task completion error: ' + String(tc.error).slice(0, 220);
+          appendDeevalRow(wrap, {
+            name: 'task_completion',
+            kind: 'ERROR',
+            rightText: 'failed',
+            score01: null,
+            context: String(tc.error).slice(0, 800),
+            titleTip: String(tc.error).slice(0, 2000),
+          });
         } else if (tc.score != null) {
           const n = typeof tc.score === 'number' ? tc.score.toFixed(3) : String(tc.score);
-          let s = 'DeepEval task completion (agent/tools): ' + n;
-          if (tc.success === false) s += ' (below threshold)';
-          if (tc.judge_model) s += ' · judge: ' + tc.judge_model;
-          tcLine.textContent = s;
+          const parts = [];
+          if (tc.success === false) parts.push('below threshold');
+          if (tc.judge_model) parts.push('judge: ' + tc.judge_model);
+          let ctx = '';
+          if (tc.reason) ctx = String(tc.reason).slice(0, 500) + (String(tc.reason).length > 500 ? '…' : '');
+          if (parts.length) ctx = (ctx ? ctx + '\n\n' : '') + parts.join(' · ');
+          appendDeevalRow(wrap, {
+            name: 'task_completion',
+            kind: 'METRIC',
+            rightText: n,
+            score01: Number(tc.score),
+            context: ctx,
+          });
         } else {
-          tcLine.textContent = 'DeepEval task completion: (no score)';
+          appendDeevalRow(wrap, {
+            name: 'task_completion',
+            kind: 'METRIC',
+            rightText: '—',
+            score01: null,
+            context: 'No score returned',
+          });
         }
-        assistantDiv.appendChild(tcLine);
-        if (tc.reason) {
-          const tr = document.createElement('div');
-          tr.className = 'tokens';
-          tr.style.marginTop = '0.2rem';
-          tr.style.fontSize = '0.78rem';
-          const rs = String(tc.reason);
-          tr.textContent = rs.slice(0, 500) + (rs.length > 500 ? '…' : '');
-          assistantDiv.appendChild(tr);
+
+        if (tc.user_goal && !tc.error) {
+          appendDeevalRow(wrap, {
+            name: 'inferred_user_goal',
+            kind: 'GOAL',
+            rightText: '—',
+            score01: null,
+            context: String(tc.user_goal).slice(0, 700) + (String(tc.user_goal).length > 700 ? '…' : ''),
+            nested: true,
+          });
         }
+        if (tc.task_outcome && !tc.error) {
+          appendDeevalRow(wrap, {
+            name: 'task_outcome',
+            kind: 'OUTCOME',
+            rightText: '—',
+            score01: null,
+            context: String(tc.task_outcome).slice(0, 700) + (String(tc.task_outcome).length > 700 ? '…' : ''),
+            nested: true,
+          });
+        }
+      }
+
+      if (wrap.childNodes.length > 1) {
+        assistantDiv.appendChild(wrap);
       }
     }
 

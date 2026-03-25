@@ -10,8 +10,10 @@ import uuid
 import urllib.error
 import urllib.request
 from contextlib import asynccontextmanager
+from datetime import datetime
 from os import getenv
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
 
@@ -152,10 +154,11 @@ def _ensure_brevity_system_message(messages: list[dict]) -> list[dict]:
     instruction = _chatbot_system_instruction()
     if _chatbot_tools_enabled():
         instruction += (
-            " When the user asks about weather, call get_current_weather and answer from its result "
-            "(live data from Open-Meteo; if the tool returns a sentence starting with "
-            '"Current weather (Open-Meteo):", treat that as success and summarize it—do not apologize '
-            "or say you cannot look up the weather.)"
+            " Use tools when they help: get_current_weather for weather (Open-Meteo live or stub); "
+            "search_knowledge_base for Texas college facts from the demo corpus; get_current_time for "
+            "local time (default timezone America/Chicago); convert_units for miles/km, °F/°C, lb/kg. "
+            "If get_current_weather returns text starting with \"Current weather (Open-Meteo):\", treat "
+            "that as success and summarize—do not apologize."
         )
     if not messages:
         return [{"role": "system", "content": instruction}]
@@ -182,6 +185,66 @@ TOOLS = [
                     "unit": {"type": "string", "enum": ["celsius", "fahrenheit"], "description": "Temperature unit"},
                 },
                 "required": ["location"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_knowledge_base",
+            "description": (
+                "Search the bundled Texas colleges knowledge base (keyword RAG). "
+                "Use for questions about UT, A&M, Rice, Texas universities, campuses, etc."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search query, e.g. Texas A&M engineering, Rice University Houston",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_current_time",
+            "description": (
+                "Get the current date and time in a named IANA timezone (e.g. America/Chicago for Texas)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "timezone": {
+                        "type": "string",
+                        "description": "IANA timezone id, e.g. America/Chicago, America/New_York, UTC",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "convert_units",
+            "description": (
+                "Convert a numeric amount between supported units: miles/km, fahrenheit/celsius, pounds/kg."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "amount": {"type": "number", "description": "Numeric value to convert"},
+                    "from_unit": {
+                        "type": "string",
+                        "description": "Source unit: miles, km, fahrenheit, celsius, pounds, kg (common aliases accepted)",
+                    },
+                    "to_unit": {"type": "string", "description": "Target unit (same set)"},
+                },
+                "required": ["amount", "from_unit", "to_unit"],
             },
         },
     },
@@ -220,10 +283,6 @@ def get_current_weather(location: str, unit: str = "fahrenheit") -> str:
     except Exception:
         logger.exception("get_current_weather (Open-Meteo) failed")
         return "Could not fetch current weather right now. Please try again later."
-
-
-# Map tool names to callables for the agent loop
-TOOL_FUNCTIONS = {"get_current_weather": get_current_weather}
 
 
 def _chatbot_tools_enabled() -> bool:
@@ -265,6 +324,17 @@ def _tool_trace_context(fn_name: str, kwargs: dict) -> str:
         loc = (kwargs.get("location") or "").strip()
         unit = kwargs.get("unit") or "fahrenheit"
         return f"location={loc!r}, unit={unit}"
+    if fn_name == "search_knowledge_base":
+        q = (kwargs.get("query") or "").strip()
+        return f"query={_trace_context_snippet(q, 120)!r}"
+    if fn_name == "get_current_time":
+        tz = (kwargs.get("timezone") or "America/Chicago").strip()
+        return f"timezone={tz!r}"
+    if fn_name == "convert_units":
+        return (
+            f"amount={kwargs.get('amount')!r}, "
+            f"from_unit={kwargs.get('from_unit')!r}, to_unit={kwargs.get('to_unit')!r}"
+        )
     return ""
 
 
@@ -529,6 +599,94 @@ def retrieve_documents(query: str, top_k: int = 4) -> list[str]:
     return [f"{d['title']}: {d['text']}" for d in picked]
 
 
+_UNIT_CANON = {
+    "miles": "miles",
+    "mi": "miles",
+    "mile": "miles",
+    "km": "kilometers",
+    "kilometer": "kilometers",
+    "kilometers": "kilometers",
+    "f": "fahrenheit",
+    "fahrenheit": "fahrenheit",
+    "c": "celsius",
+    "celsius": "celsius",
+    "lb": "pounds",
+    "lbs": "pounds",
+    "pound": "pounds",
+    "pounds": "pounds",
+    "kg": "kilograms",
+    "kilogram": "kilograms",
+    "kilograms": "kilograms",
+}
+
+_CONVERTERS = {
+    ("miles", "kilometers"): lambda x: x * 1.609344,
+    ("kilometers", "miles"): lambda x: x / 1.609344,
+    ("fahrenheit", "celsius"): lambda x: (x - 32) * 5 / 9,
+    ("celsius", "fahrenheit"): lambda x: x * 9 / 5 + 32,
+    ("pounds", "kilograms"): lambda x: x * 0.45359237,
+    ("kilograms", "pounds"): lambda x: x / 0.45359237,
+}
+
+
+def _canonical_unit(u: str) -> str | None:
+    key = re.sub(r"[^\w]", "", (u or "").strip().lower())
+    return _UNIT_CANON.get(key)
+
+
+@tool(name="search_knowledge_base")
+def search_knowledge_base(query: str) -> str:
+    """Tool: search Texas colleges corpus (same keyword RAG as server-side context)."""
+    q = (query or "").strip()
+    if not q:
+        return "No query provided."
+    docs = retrieve_documents(q)
+    if not docs:
+        return "No matching documents in the knowledge base for that query."
+    return "\n\n---\n\n".join(docs)
+
+
+@tool(name="get_current_time")
+def get_current_time(timezone: str = "America/Chicago") -> str:
+    """Tool: current local date/time in an IANA timezone."""
+    tz_name = (timezone or "America/Chicago").strip() or "America/Chicago"
+    try:
+        tz = ZoneInfo(tz_name)
+    except Exception:
+        return f"Unknown timezone {tz_name!r}. Use an IANA id such as America/Chicago or UTC."
+    now = datetime.now(tz)
+    return now.strftime("%Y-%m-%d %H:%M:%S %Z (IANA %z)")
+
+
+@tool(name="convert_units")
+def convert_units(amount: float | int | str, from_unit: str, to_unit: str) -> str:
+    """Tool: convert between miles/km, °F/°C, lb/kg."""
+    try:
+        x = float(amount)
+    except (TypeError, ValueError):
+        return "Invalid amount: pass a number."
+    a = _canonical_unit(from_unit)
+    b = _canonical_unit(to_unit)
+    if not a or not b:
+        return f"Unknown unit(s): from_unit={from_unit!r}, to_unit={to_unit!r}. Use miles, km, fahrenheit, celsius, pounds, kg."
+    if a == b:
+        return f"{x:g} ({a} unchanged)"
+    fn = _CONVERTERS.get((a, b))
+    if not fn:
+        return f"No conversion defined from {a} to {b}. Supported: miles↔km, fahrenheit↔celsius, pounds↔kg."
+    y = fn(x)
+    return f"{x:g} {a} = {y:.4g} {b}"
+
+
+# Map tool names to callables for the agent loop (must follow all @tool defs above).
+TOOL_FUNCTIONS: dict[str, object] = {
+    "get_current_weather": get_current_weather,
+    "search_knowledge_base": search_knowledge_base,
+    "get_current_time": get_current_time,
+    "convert_units": convert_units,
+}
+
+
 def build_prompt(context: list[str], messages: list[dict]) -> list[dict]:
     """Build messages for the LLM. If context is non-empty, merge it into the first system message or add one."""
     if not context:
@@ -693,7 +851,11 @@ def run_agent(messages: list[dict], trace_children: list | None = None) -> tuple
                 args = _parse_tool_arguments(raw_args)
                 if name == "get_current_weather" and (not args.get("location") or _looks_like_schema(args)):
                     args = _infer_weather_location(args, messages_copy)
-                kwargs = {k.lower(): v for k, v in args.items() if isinstance(v, (str, int, float, type(None)))}
+                kwargs = {
+                    k.lower(): v
+                    for k, v in args.items()
+                    if isinstance(v, (str, int, float, type(None)))
+                }
                 t_tool = time.perf_counter()
                 if name == "get_current_weather":
                     kwargs.setdefault("location", "")
@@ -836,7 +998,7 @@ def _chat_completion(
     model = _openai_model()
     _cc_ctx = f"model={model} · request_messages={len(messages)}"
     if _chatbot_tools_enabled():
-        _cc_ctx += " · OpenAI tools=auto (get_current_weather)"
+        _cc_ctx += " · OpenAI tools=auto (weather, knowledge_base, time, convert_units)"
 
     if choice.message.tool_calls:
         assistant_msg = _message_to_dict(choice.message)
@@ -864,13 +1026,6 @@ def _chat_completion(
             }
         )
     return choice.message.content or "", usage, None
-
-
-@tool(name="search_knowledge_base")
-def search_kb(query: str) -> str:
-    """Tool: search knowledge base (stub). Returns context as a single string for use in prompts or agents."""
-    docs = retrieve_documents(query)
-    return "\n\n".join(docs) if docs else ""
 
 
 @app.get("/health")
