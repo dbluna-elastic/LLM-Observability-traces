@@ -39,10 +39,11 @@ def _resolve_judge_model() -> str:
     api_base = (getenv("OPENAI_API_BASE") or "").strip()
     explicit = (getenv("DEEPEVAL_JUDGE_MODEL") or "").strip()
     from_openai = (getenv("OPENAI_MODEL") or "").strip()
+    # Prefer DEEPEVAL_JUDGE_MODEL for eval-only; else OPENAI_MODEL; else a strong default for judges.
     if _elastic_hosted_litellm_base(api_base):
-        default = "llm-gateway/gpt-4o-mini"
+        default = "llm-gateway/gpt-4.1"
     else:
-        default = "gpt-4o-mini"
+        default = "gpt-4.1"
     raw = explicit or from_openai or default
     if "/" in raw:
         return raw

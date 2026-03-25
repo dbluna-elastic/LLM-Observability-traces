@@ -40,6 +40,20 @@ def test_resolve_judge_model_no_prefix_for_openai_com(monkeypatch):
     assert _resolve_judge_model() == "gpt-4o-mini"
 
 
+def test_resolve_judge_model_default_elastic_without_openai_model(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_BASE", "https://elastic.litellm-prod.ai")
+    monkeypatch.delenv("OPENAI_MODEL", raising=False)
+    monkeypatch.delenv("DEEPEVAL_JUDGE_MODEL", raising=False)
+    assert _resolve_judge_model() == "llm-gateway/gpt-4.1"
+
+
+def test_resolve_judge_model_default_openai_com_without_openai_model(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_BASE", "https://api.openai.com/v1")
+    monkeypatch.delenv("OPENAI_MODEL", raising=False)
+    monkeypatch.delenv("DEEPEVAL_JUDGE_MODEL", raising=False)
+    assert _resolve_judge_model() == "gpt-4.1"
+
+
 def test_gateway_judge_preserves_prefixed_model_id():
     pytest.importorskip("deepeval")
     from app.deepeval_openai_judge import GatewayOpenAIJudge

@@ -111,7 +111,7 @@ CHATBOT_USE_TOOLS=true
 | `CHATBOT_PARALLEL_TOOL_CALLS` | No | If **`true`**, omit `parallel_tool_calls=false` on chat requests (OpenAI-style parallel tools). Default **`false`** (sequential tool rounds; more reliable on some LLM gateways). |
 | `WEATHER_PROVIDER` | No | **`open_meteo`** (default): `get_current_weather` uses [Open-Meteo](https://open-meteo.com/) (outbound HTTPS, no key). Allow **`geocoding-api.open-meteo.com`** and **`api.open-meteo.com`** from the app container. **`stub`**: fixed demo temperatures (offline / CI). |
 | `DEEPEVAL_SCORE_CHAT` | No | If **`true`**, runs [DeepEval](https://github.com/confident-ai/deepeval) **Answer Relevancy** on each successful `/api/chat` turn and returns scores in **`evaluation`** (extra latency + judge LLM cost via **`OPENAI_API_KEY`**). Default **`false`**. |
-| `DEEPEVAL_JUDGE_MODEL` | No | Model id for the judge (defaults to **`OPENAI_MODEL`**). Use a plain OpenAI-style name if your chat model is a gateway-only alias. |
+| `DEEPEVAL_JUDGE_MODEL` | No | Model id for DeepEval judges only (docker default **`llm-gateway/gpt-4.1`**; falls back to **`OPENAI_MODEL`**, then **`gpt-4.1`** / **`llm-gateway/gpt-4.1`** on Elastic). Chat uses **`OPENAI_MODEL`**. |
 | `DEEPEVAL_INCLUDE_REASON` | No | If **`true`** (default), include a short textual reason in **`evaluation`**. |
 | `DEEPEVAL_TELEMETRY_OPT_OUT` | No | Set **`YES`** to opt out of DeepEval telemetry (default in Compose). |
 | `CHATBOT_SYSTEM_INSTRUCTION` | No | Override the default system prompt (brief answers unless the user wants more). |
