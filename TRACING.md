@@ -99,6 +99,16 @@ Each `POST /api/chat` sends a validated **use case** (`category` in the JSON bod
 | **Web UI Traceflow** | The `handle_chat` row’s context line: `use case: … · session=…` (from the `traceflow` object in the chat API response). |
 | **`user.session_id`** | Same span attribute as the session header `X-Session-ID` (or server-generated UUID). |
 
+### MCP fetch (`fetch_url`)
+
+When **`MCP_FETCH_ENABLED=true`** and **`CHATBOT_USE_TOOLS=true`**, the model can call **`fetch_url`**, which runs the official Python package **`mcp-server-fetch`** as a **stdio** subprocess (new session per call; retries on flaky init).
+
+| Signal | Where it appears |
+|--------|------------------|
+| Traceloop tool span | **`fetch_url`** (same pattern as other `@tool` functions). |
+| Manual OTEL span | **`mcp.tool.fetch`** with attributes **`mcp.server`** (`mcp_server_fetch`), **`mcp.tool.name`** (`fetch`), **`url.host`** (parsed hostname only). |
+| Elastic | Under **`chatbot-service`**, typically nested under **`agent_call`** / **`generate_response`** / **`handle_chat`** like other tools—no separate MCP service unless you export OTLP from another process. |
+
 ---
 
 ## 4. Env vars that affect tracing
@@ -107,6 +117,7 @@ Each `POST /api/chat` sends a validated **use case** (`category` in the JSON bod
 |----------------------------|--------|
 | `PROPAGATE_TRACE_TO_LITELLM` | `true` → app sends traceparent to LiteLLM so proxy spans are in the same trace. |
 | `CHATBOT_USE_TOOLS`        | `true` → agent loop runs; you see `agent_call` and tool spans (e.g. `get_current_weather`). Default in compose is `false` (tinyllama); set `true` for tool-capable models. |
+| `MCP_FETCH_ENABLED`        | `true` → OpenAI tool `fetch_url` is registered; each call runs the official **mcp-server-fetch** MCP server over stdio. Look for Traceloop **`fetch_url`** plus OTEL span **`mcp.tool.fetch`** (`mcp.server`, `mcp.tool.name`, `url.host`). |
 | `TRACELOOP_TRACE_CONTENT`  | `false` → prompt/completion content not sent to Elastic. |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` (app) | Where the app sends OTLP (default: collector :4318). |
 | `OTEL_TRACES_EXPORTER`, `OTEL_EXPORTER_OTLP_*` (LiteLLM) | LiteLLM OTLP export to the same collector. |

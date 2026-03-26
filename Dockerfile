@@ -1,4 +1,5 @@
 # Chatbot + OpenLLMetry → Elastic
+# Official MCP URL fetch uses PyPI mcp-server-fetch (python -m mcp_server_fetch); see app/mcp_fetch.py and MCP_FETCH_* env.
 FROM python:3.12-slim
 
 WORKDIR /app

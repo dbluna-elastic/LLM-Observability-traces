@@ -18,6 +18,13 @@ services:
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
       # Agent/tools: tinyllama often mangles tool JSON—default off. Set true for capable cloud models.
       - CHATBOT_USE_TOOLS=${CHATBOT_USE_TOOLS:-false}
+      # Official MCP fetch (stdio): adds OpenAI tool fetch_url when true; requires outbound HTTPS from app
+      - MCP_FETCH_ENABLED=${MCP_FETCH_ENABLED:-false}
+      - MCP_FETCH_ALLOWLIST=${MCP_FETCH_ALLOWLIST:-}
+      - MCP_FETCH_TIMEOUT_SEC=${MCP_FETCH_TIMEOUT_SEC:-60}
+      - MCP_FETCH_RETRIES=${MCP_FETCH_RETRIES:-3}
+      - MCP_FETCH_COMMAND=${MCP_FETCH_COMMAND:-python}
+      - MCP_FETCH_ARGV=${MCP_FETCH_ARGV:--m,mcp_server_fetch}
       # Weather tool: open_meteo (live, no key) or stub (fixed demo values)
       - WEATHER_PROVIDER=${WEATHER_PROVIDER:-open_meteo}
       - CHATBOT_SYSTEM_INSTRUCTION=${CHATBOT_SYSTEM_INSTRUCTION:-}

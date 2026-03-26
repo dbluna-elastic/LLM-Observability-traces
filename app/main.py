@@ -9,6 +9,7 @@ import time
 import uuid
 import urllib.error
 import urllib.request
+from urllib.parse import urlparse
 from contextlib import asynccontextmanager
 from datetime import datetime
 from os import getenv
@@ -55,6 +56,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, field_validator
 
 from app.categories import PROMPT_CATEGORIES
+from app.mcp_fetch import call_fetch_sync, mcp_fetch_enabled, url_host_allowed
 from app.deepeval_score import score_agent_task_completion, score_chat_turn
 from app.weather_open_meteo import fetch_current_weather
 
@@ -263,6 +265,37 @@ TOOLS = [
     },
 ]
 
+FETCH_URL_OPENAI_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "fetch_url",
+        "description": (
+            "Fetch a public HTTP(S) URL and return page content as markdown (via official MCP fetch server). "
+            "Use for live web facts when the knowledge base is insufficient. "
+            "Respects MCP_FETCH_ALLOWLIST when set."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "Full URL to fetch (https://...)"},
+                "max_length": {
+                    "type": "integer",
+                    "description": "Max characters to return (default on server ~5000)",
+                },
+                "start_index": {
+                    "type": "integer",
+                    "description": "Character offset for chunked reads of long pages",
+                },
+                "raw": {
+                    "type": "boolean",
+                    "description": "If true, skip markdown conversion (raw content)",
+                },
+            },
+            "required": ["url"],
+        },
+    },
+}
+
 
 def _weather_stub_reply(location: str, unit: str) -> str:
     """Fixed demo weather when WEATHER_PROVIDER=stub (offline / tests)."""
@@ -348,6 +381,9 @@ def _tool_trace_context(fn_name: str, kwargs: dict) -> str:
             f"amount={kwargs.get('amount')!r}, "
             f"from_unit={kwargs.get('from_unit')!r}, to_unit={kwargs.get('to_unit')!r}"
         )
+    if fn_name == "fetch_url":
+        u = (kwargs.get("url") or "").strip()
+        return f"url={_trace_context_snippet(u, 120)!r}"
     return ""
 
 
@@ -691,6 +727,37 @@ def convert_units(amount: float | int | str, from_unit: str, to_unit: str) -> st
     return f"{x:g} {a} = {y:.4g} {b}"
 
 
+@tool(name="fetch_url")
+def fetch_url(
+    url: str,
+    max_length: int | None = None,
+    start_index: int | None = None,
+    raw: bool | None = None,
+) -> str:
+    """Tool: fetch URL via official MCP mcp-server-fetch (stdio)."""
+    if not mcp_fetch_enabled():
+        return "URL fetch is disabled (set MCP_FETCH_ENABLED=true)."
+    u = (url or "").strip()
+    if not u:
+        return "No URL provided."
+    ok, reason = url_host_allowed(u)
+    if not ok:
+        return f"URL not allowed: {reason}"
+    ml = None if max_length is None else int(max_length)
+    si = None if start_index is None else int(start_index)
+    rw = None if raw is None else bool(raw)
+    with tracer.start_as_current_span("mcp.tool.fetch") as mspan:
+        mspan.set_attribute("mcp.server", "mcp_server_fetch")
+        mspan.set_attribute("mcp.tool.name", "fetch")
+        try:
+            parsed = urlparse(u)
+            if parsed.hostname:
+                mspan.set_attribute("url.host", parsed.hostname)
+        except Exception:
+            pass
+        return call_fetch_sync(u, max_length=ml, start_index=si, raw=rw)
+
+
 # Map tool names to callables for the agent loop (must follow all @tool defs above).
 TOOL_FUNCTIONS: dict[str, object] = {
     "get_current_weather": get_current_weather,
@@ -698,6 +765,9 @@ TOOL_FUNCTIONS: dict[str, object] = {
     "get_current_time": get_current_time,
     "convert_units": convert_units,
 }
+if mcp_fetch_enabled():
+    TOOL_FUNCTIONS["fetch_url"] = fetch_url
+    TOOLS.append(FETCH_URL_OPENAI_TOOL)
 
 
 def build_prompt(context: list[str], messages: list[dict]) -> list[dict]:
@@ -867,7 +937,7 @@ def run_agent(messages: list[dict], trace_children: list | None = None) -> tuple
                 kwargs = {
                     k.lower(): v
                     for k, v in args.items()
-                    if isinstance(v, (str, int, float, type(None)))
+                    if isinstance(v, (str, int, float, type(None), bool))
                 }
                 t_tool = time.perf_counter()
                 if name == "get_current_weather":
@@ -930,6 +1000,8 @@ def generate_response(
         model = _openai_model()
         rag = f"{len(context)} RAG chunk(s) in prompt" if context else "no RAG chunks"
         tools = "tools on" if _chatbot_tools_enabled() else "tools off"
+        if _chatbot_tools_enabled() and mcp_fetch_enabled():
+            tools += " + MCP fetch"
         base = f"model={model} · {len(final_messages)} messages · {rag} · {tools}"
         if _requests_through_litellm():
             base += (
@@ -1011,7 +1083,10 @@ def _chat_completion(
     model = _openai_model()
     _cc_ctx = f"model={model} · request_messages={len(messages)}"
     if _chatbot_tools_enabled():
-        _cc_ctx += " · OpenAI tools=auto (weather, knowledge_base, time, convert_units)"
+        _cc_ctx += " · OpenAI tools=auto (weather, knowledge_base, time, convert_units"
+        if mcp_fetch_enabled():
+            _cc_ctx += ", fetch_url (MCP)"
+        _cc_ctx += ")"
 
     if choice.message.tool_calls:
         assistant_msg = _message_to_dict(choice.message)

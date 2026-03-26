@@ -108,6 +108,12 @@ CHATBOT_USE_TOOLS=true
 | `ELASTIC_APM_INSECURE` | No | Set to `true` for self-signed or dev TLS (default: `false`) |
 | `OTEL_SERVICE_NAME` | No | Service name in Kibana (default: `chatbot-service`) |
 | `CHATBOT_USE_TOOLS` | No | Tool-calling agent + `agent_call` in traces (default **`false`**; set `true` for tool-capable cloud models) |
+| `MCP_FETCH_ENABLED` | No | If **`true`**, registers **`fetch_url`** (official **mcp-server-fetch** over stdio). Requires **`CHATBOT_USE_TOOLS=true`** and outbound HTTPS from the app. Default **`false`**. |
+| `MCP_FETCH_ALLOWLIST` | No | Comma-separated allowed URL hosts when set (empty = allow all — **SSRF risk**). Patterns: `example.com`, `*.wikipedia.org`. |
+| `MCP_FETCH_TIMEOUT_SEC` | No | Per MCP session/tool timeout in seconds (default **`60`**, clamped 5–300). |
+| `MCP_FETCH_RETRIES` | No | Retries on transport/init failures (default **`3`**, max 5). |
+| `MCP_FETCH_COMMAND` | No | Executable to run the fetch server (default **`python`**). |
+| `MCP_FETCH_ARGV` | No | Comma-separated argv after command (default **`-m,mcp_server_fetch`**). |
 | `CHATBOT_PARALLEL_TOOL_CALLS` | No | If **`true`**, omit `parallel_tool_calls=false` on chat requests (OpenAI-style parallel tools). Default **`false`** (sequential tool rounds; more reliable on some LLM gateways). |
 | `WEATHER_PROVIDER` | No | **`open_meteo`** (default): `get_current_weather` uses [Open-Meteo](https://open-meteo.com/) (outbound HTTPS, no key). Allow **`geocoding-api.open-meteo.com`** and **`api.open-meteo.com`** from the app container. **`stub`**: fixed demo temperatures (offline / CI). |
 | `DEEPEVAL_SCORE_CHAT` | No | If **`true`**, runs [DeepEval](https://github.com/confident-ai/deepeval) **Answer Relevancy** on each successful `/api/chat` turn and returns scores in **`evaluation`** (extra latency + judge LLM cost via **`OPENAI_API_KEY`**). Default **`false`**. |
@@ -127,6 +133,7 @@ The app image installs **DeepEval** ([`requirements-eval.txt`](requirements-eval
 - **Chat workflow**: each `/api/chat` request is a workflow; the LLM call is a child span. Optional **`category`** on the JSON body is validated against a fixed use-case list (default **`Other`**) and exported as OTEL **`prompt.category`**. **`GET /api/prompt/categories`** returns the allowed labels for UIs.
 - **LLM spans**: provider (OpenAI), model, prompts/completions (if not disabled), token usage, latency.
 - **Tool calls**: when the model uses tools, those appear as part of the trace. The **`get_current_weather`** tool uses **Open-Meteo** for live conditions when **`WEATHER_PROVIDER=open_meteo`** (default); the app needs outbound HTTPS to **`geocoding-api.open-meteo.com`** and **`api.open-meteo.com`**. Use **`WEATHER_PROVIDER=stub`** for the previous fixed demo replies without calling the network.
+- **MCP fetch** (`MCP_FETCH_ENABLED=true`): adds **`fetch_url`** backed by the official **`mcp-server-fetch`** subprocess. Traceloop still emits a **`fetch_url`** tool span; the app also records an OpenTelemetry span **`mcp.tool.fetch`** with **`mcp.server`**, **`mcp.tool.name`**, and **`url.host`**. Prefer **`MCP_FETCH_ALLOWLIST`** outside local demos.
 - **[TRACING.md](TRACING.md)** – Diagram of tracing capabilities: service/OTLP flow, span hierarchy (workflow → tasks → agent_call → chat_completion, tools), and env vars.
 
 To avoid sending prompt/completion content to Elastic (e.g. in production), set:
