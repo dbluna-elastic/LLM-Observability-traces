@@ -12,3 +12,10 @@ python-dotenv==1.0.1
 # MCP fetch server (stdio): official reference server + Python client SDK
 mcp>=1.26.0,<2
 mcp-server-fetch>=2025.4.7
+
+# DeepEval (optional chat scoring via DEEPEVAL_SCORE_CHAT; LLM-as-judge)
+deepeval>=2.5.0,<3
+# deepeval imports Gemini model modules when loading metrics; satisfies `from google.genai import types`
+google-genai>=1.0.0
+# deepeval.metrics pulls telemetry that expects posthog (not always declared in older deepeval metadata)
+posthog>=3.0.0

@@ -81,7 +81,7 @@ def _include_reason() -> bool:
 def score_chat_turn(user_query: str, assistant_reply: str) -> dict | None:
     """
     Run Answer Relevancy on the last user question vs assistant reply.
-    Returns a JSON-serializable dict, or None if deepeval is not installed.
+    Returns a JSON-serializable dict, or a dict with ``error`` / ``skipped`` if scoring cannot run.
     """
     uq = (user_query or "").strip()
     ar = (assistant_reply or "").strip()
@@ -96,9 +96,14 @@ def score_chat_turn(user_query: str, assistant_reply: str) -> dict | None:
     try:
         from deepeval.metrics import AnswerRelevancyMetric
         from deepeval.test_case import LLMTestCase
-    except ImportError:
-        logger.warning("deepeval is not installed; skip scoring")
-        return {"error": "deepeval is not installed (image should include requirements-eval.txt)"}
+    except ImportError as e:
+        logger.warning("deepeval import failed; skip scoring: %s", e, exc_info=True)
+        return {
+            "error": (
+                f"deepeval import failed: {e!s}. "
+                "Install dependencies (pip install -r requirements.txt) or check transitive deps."
+            )
+        }
 
     judge, model, _base = make_gateway_judge()
     include_reason = _include_reason()
@@ -163,9 +168,14 @@ def score_agent_task_completion(
     try:
         from deepeval.metrics import TaskCompletionMetric
         from deepeval.test_case import LLMTestCase, ToolCall
-    except ImportError:
-        logger.warning("deepeval is not installed; skip agent scoring")
-        return {"error": "deepeval is not installed (image should include requirements-eval.txt)"}
+    except ImportError as e:
+        logger.warning("deepeval import failed; skip agent scoring: %s", e, exc_info=True)
+        return {
+            "error": (
+                f"deepeval import failed: {e!s}. "
+                "Install dependencies (pip install -r requirements.txt) or check transitive deps."
+            )
+        }
 
     tool_calls: list[ToolCall] = []
     for row in tools_invoked:

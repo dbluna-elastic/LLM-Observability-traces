@@ -126,7 +126,7 @@ Replies default to **brief** answers via a built-in system instruction; set `CHA
 
 ### DeepEval (optional)
 
-The app image installs **DeepEval** ([`requirements-eval.txt`](requirements-eval.txt)). With **`DEEPEVAL_SCORE_CHAT=true`**, each successful chat response includes an **`evaluation`** object (e.g. **`score`**, **`reason`**, **`judge_model`**) from the answer-relevancy metric. Local tests: `pip install -r requirements-dev.txt` then **`pytest tests/`** (tests do not call a live judge).
+The app image installs **DeepEval** via [`requirements.txt`](requirements.txt) (`deepeval>=2.5.0,<3`, plus explicit **`google-genai`** and **`posthog`** so `deepeval.metrics` imports succeed in a slim image). [`requirements-eval.txt`](requirements-eval.txt) is a compatibility shim (`-r requirements.txt`). With **`DEEPEVAL_SCORE_CHAT=true`**, each successful chat response includes an **`evaluation`** object (e.g. **`score`**, **`reason`**, **`judge_model`**) from the answer-relevancy metric. Local tests: `pip install -r requirements-dev.txt` then **`pytest tests/`** (tests do not call a live judge).
 
 ## What gets traced
 
@@ -150,6 +150,7 @@ in the `app` service in `docker-compose.yaml` or in your env.
 python -m venv .venv
 source .venv/bin/activate   # or .venv\Scripts\activate on Windows
 pip install -r requirements.txt
+# DeepEval is included above; use pip install -r requirements-dev.txt for pytest.
 ```
 
 Set env vars (e.g. from `.env`) and point the app at a local collector. For Ollama (with `ollama serve` running locally):

@@ -9,7 +9,8 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1
 
 COPY requirements.txt requirements-eval.txt ./
-RUN pip install --no-cache-dir -r requirements.txt -r requirements-eval.txt
+RUN pip install --no-cache-dir -r requirements.txt \
+    && python -c "from deepeval.metrics import AnswerRelevancyMetric"
 
 COPY app/ ./app/
 COPY otel-collector-config.yaml ./
