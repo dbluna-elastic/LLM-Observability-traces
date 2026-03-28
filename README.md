@@ -49,6 +49,7 @@ The chat workflow runs a small **keyword retrieval** step over [`app/data/texas_
 
    - App (chat UI): [http://localhost:8088](http://localhost:8088)
    - Health: [http://localhost:8088/health](http://localhost:8088/health)
+   - **Run test questions** (in the UI) runs ten prompts meant to exercise each agent tool (`get_current_weather`, `search_knowledge_base`, `get_current_time`, `convert_units`, and optionally `fetch_url`). Set **`CHATBOT_USE_TOOLS=true`**. For URL fetch prompts to call **`fetch_url`**, set **`MCP_FETCH_ENABLED=true`** and include **`example.com`** (or your target host) in **`MCP_FETCH_ALLOWLIST`**. You can also run **`python scripts/run_llm_tests.py`** against the same API.
 
 5. **View traces in Elastic**
 

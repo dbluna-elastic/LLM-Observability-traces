@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Run 10 high-quality LLM test questions against the chatbot API and save results.
+Run 10 tool-oriented test questions against the chatbot API (weather, KB, time, convert, fetch, combos).
+Assumes CHATBOT_USE_TOOLS=true; fetch prompts need MCP_FETCH_ENABLED=true and allowlisted hosts.
 Usage: python scripts/run_llm_tests.py [--base-url http://localhost:8088] [--output results.md]
 """
 
@@ -16,63 +17,63 @@ from urllib.request import Request, urlopen
 QUESTIONS = [
     {
         "id": 1,
-        "name": "No-Letter Constraint (Instruction Following)",
-        "question": "Write a 50-word summary of the plot of The Matrix without using the letter 'e'.",
-        "why": "Tests hard constraints; tokenization makes it difficult to track letters while maintaining grammar.",
+        "name": "Tool: current weather (Houston)",
+        "question": "What is the current weather in Houston, Texas? Use your tools and report temperature in Fahrenheit.",
+        "why": "Should invoke get_current_weather; validates Open-Meteo path and Traceflow tool row.",
     },
     {
         "id": 2,
-        "name": "Multi-Step Counterfactual (Reasoning)",
-        "question": "If Steve Jobs had decided to become a professional pastry chef in 1976 instead of starting Apple, how might the current landscape of smartphone interface design be different today? Provide three specific examples.",
-        "why": "Requires understanding Jobs' influence on design and projecting a world where that influence was absent.",
+        "name": "Tool: Texas colleges knowledge base (Rice)",
+        "question": "Using the Texas colleges knowledge base, what notable facts can you share about Rice University in Houston?",
+        "why": "Should invoke search_knowledge_base over texas_colleges.json.",
     },
     {
         "id": 3,
-        "name": "Logical Fallacy Trap (Critical Thinking)",
-        "question": "Argue in favor of the statement: 'Since every part of this machine is light, the entire machine must be light.' Then, identify the logical fallacy you just used.",
-        "why": "Tests recognition of the Fallacy of Composition; a strong model will flag why the argument is unsound.",
+        "name": "Tool: time (America/Chicago)",
+        "question": "What is the current date and time in the America/Chicago timezone? Use your tool with that exact IANA timezone name.",
+        "why": "Should invoke get_current_time with America/Chicago.",
     },
     {
         "id": 4,
-        "name": "Moral Dilemma with a Twist (Ethics & Nuance)",
-        "question": "A self-driving car's brakes fail. It must choose between hitting a group of five elderly pedestrians or swerving into a wall, which will certainly kill the single passenger who is a renowned cancer researcher. Do not give me a 'it's a complex issue' answer; pick a side and justify it using Utilitarianism.",
-        "why": "Forces the model out of neutrality to perform a specific philosophical analysis.",
+        "name": "Tool: unit conversion (miles to km)",
+        "question": "Convert exactly 100 miles to kilometers using your convert_units tool and report the numeric result.",
+        "why": "Should invoke convert_units (miles to kilometers).",
     },
     {
         "id": 5,
-        "name": "Complex Code Refactoring (Technical Skill)",
-        "question": "Here is a Python function that uses nested loops to find duplicates in a list. Refactor it to O(n) time complexity, ensure it is PEP8 compliant, and add type hinting.",
-        "why": "Tests optimization logic and modern professional standards (PEP8, type hints).",
+        "name": "Tool: fetch URL (example.com)",
+        "question": "Fetch https://example.com with your URL fetch tool if you have one, then give a one-sentence summary. If you cannot fetch URLs, say so clearly.",
+        "why": "When MCP_FETCH_ENABLED=true and example.com is allowlisted, should invoke fetch_url and mcp.tool.fetch span.",
     },
     {
         "id": 6,
-        "name": "In-World Consistency Test (Creative Writing)",
-        "question": "Describe a sunset, but you are a Victorian-era coal miner who has never seen the sky because you've lived underground your whole life. Use metaphors only related to mining.",
-        "why": "Tests persona consistency; model must filter vocabulary through a limited perspective.",
+        "name": "Multi: weather Dallas + time Chicago",
+        "question": "What is the current weather in Dallas, Texas in Fahrenheit, and what is the current local time in America/Chicago? Use a separate tool call for each.",
+        "why": "Two tools: get_current_weather and get_current_time.",
     },
     {
         "id": 7,
-        "name": "Zero-Shot Translation of Slang (Linguistics)",
-        "question": "Translate the phrase 'That's mid, no cap, he's just chasing clout' into 18th-century Shakespearean English.",
-        "why": "Requires mapping modern slang nuances into a historical dialect.",
+        "name": "Multi: KB Texas A&M + weather College Station",
+        "question": "Give one fact about Texas A&M University from your Texas colleges knowledge base, then report the current weather in College Station, Texas in Fahrenheit.",
+        "why": "search_knowledge_base then get_current_weather.",
     },
     {
         "id": 8,
-        "name": "Data Synthesis Challenge (Information Density)",
-        "question": "Compare the economic policies of the Roman Empire under Augustus to the United States' 'New Deal' in a 3-column table format, focusing on infrastructure, currency debasement, and social welfare.",
-        "why": "Tests retrieving disparate facts and organizing into a structured comparative framework.",
+        "name": "Multi: convert F to C + UTC time",
+        "question": "Convert 212 degrees Fahrenheit to Celsius using your tool, and tell me the current time in UTC using your time tool.",
+        "why": "convert_units and get_current_time (UTC).",
     },
     {
         "id": 9,
-        "name": "Recursive Prompt (Self-Awareness)",
-        "question": "Write a prompt that would be difficult for an LLM like yourself to answer accurately, then explain why that prompt is difficult.",
-        "why": "Reveals the model's understanding of its own limitations.",
+        "name": "Multi: compare two schools (KB only)",
+        "question": "Compare The University of Texas at Austin and Texas A&M University using only facts from your Texas colleges knowledge base: city or location and one academic or campus strength for each.",
+        "why": "One or more search_knowledge_base calls; no weather/time required.",
     },
     {
         "id": 10,
-        "name": "Theory of Mind Test (Social Intelligence)",
-        "question": "Sally puts a ball in a red basket and leaves the room. While she is gone, Anne moves the ball to a blue box. Anne then leaves. Sally returns. Where will Sally look for the ball, and why would she be surprised if she looked in the blue box?",
-        "why": "Classic False Belief task; tests whether the AI can model a character with incorrect information.",
+        "name": "Multi: orchestration (weather, time, convert, KB, optional fetch)",
+        "question": "In one turn, use your tools for all of: (1) current weather in San Antonio, Texas in Fahrenheit, (2) current date and time in UTC, (3) convert 50 miles to kilometers, (4) one sentence about UT Austin from the Texas colleges knowledge base. If you have a web fetch tool, also fetch https://example.com and quote one short line from the page.",
+        "why": "Exercises all five tools in one user message when MCP fetch is enabled.",
     },
 ]
 
