@@ -10,7 +10,8 @@ import uuid
 import urllib.error
 import urllib.request
 from urllib.parse import urlparse
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
+from contextvars import ContextVar
 from datetime import datetime
 from os import getenv
 from pathlib import Path
@@ -126,6 +127,8 @@ class ChatRequest(BaseModel):
     # Use-case label for tracing (prompt.category). Default Other; must be one of PROMPT_CATEGORIES.
     category: str = "Other"
     name: str | None = None  # optional; when set, tool + task personalize the prompt
+    # Optional model id for this request only (e.g. test runner); otherwise OPENAI_MODEL / default.
+    model: str | None = None
 
     @field_validator("category", mode="before")
     @classmethod
@@ -1153,7 +1156,27 @@ def _openai_error_detail_for_log(exc: OpenAIAPIError) -> str:
     return str(exc)[:800]
 
 
+# Per-request chat model override (set by /api/chat when body includes ``model``).
+_chat_model_override: ContextVar[str | None] = ContextVar("chat_model_override", default=None)
+
+
+@contextmanager
+def _chat_model_scope(model: str | None):
+    token = None
+    explicit = (model or "").strip() or None
+    if explicit:
+        token = _chat_model_override.set(explicit)
+    try:
+        yield
+    finally:
+        if token is not None:
+            _chat_model_override.reset(token)
+
+
 def _openai_model() -> str:
+    override = _chat_model_override.get()
+    if override:
+        return override
     explicit = (getenv("OPENAI_MODEL") or "").strip()
     if explicit:
         return explicit
@@ -1371,111 +1394,116 @@ def chat(req: ChatRequest, request: Request):
         "children": [],
         "context": f"use case: {prompt_category} · session={session_short}",
     }
-    try:
-        reply, usage, agent_tools = handle_chat(query, messages, name=name, trace_root=trace_root)
-    except OpenAIAPIStatusError as e:
-        _log_llm_upstream_error(e, "chat")
-        if getattr(e, "status_code", None) == 400 and _is_likely_content_policy_block(e):
-            msg = (
-                "Request blocked by content policy. Please avoid sharing sensitive personal information."
-                + _debug_llm_error_suffix(e)
+    model_override = (req.model or "").strip() or None
+    if model_override:
+        span.set_attribute("llm.request.model", model_override[:256])
+
+    with _chat_model_scope(req.model):
+        try:
+            reply, usage, agent_tools = handle_chat(query, messages, name=name, trace_root=trace_root)
+        except OpenAIAPIStatusError as e:
+            _log_llm_upstream_error(e, "chat")
+            if getattr(e, "status_code", None) == 400 and _is_likely_content_policy_block(e):
+                msg = (
+                    "Request blocked by content policy. Please avoid sharing sensitive personal information."
+                    + _debug_llm_error_suffix(e)
+                )
+            else:
+                msg = _user_message_for_status_error(e) + _debug_llm_error_suffix(e)
+            return ChatResponse(
+                message=msg,
+                input_tokens=None,
+                output_tokens=None,
+                total_tokens=None,
             )
-        else:
-            msg = _user_message_for_status_error(e) + _debug_llm_error_suffix(e)
-        return ChatResponse(
-            message=msg,
-            input_tokens=None,
-            output_tokens=None,
-            total_tokens=None,
-        )
-    except OpenAIAPIConnectionError as e:
-        _log_llm_upstream_error(e, "chat")
-        return ChatResponse(
-            message="Cannot reach the language model. Please try again later." + _debug_llm_error_suffix(e),
-            input_tokens=None,
-            output_tokens=None,
-            total_tokens=None,
-        )
-    except OpenAIAPIError as e:
-        _log_llm_upstream_error(e, "chat")
-        msg = _user_message_for_api_error(e) + _debug_llm_error_suffix(e)
-        return ChatResponse(
-            message=msg,
-            input_tokens=None,
-            output_tokens=None,
-            total_tokens=None,
-        )
-    except Exception as e:
-        logger.exception("Unexpected error in chat: %s", e)
-        return ChatResponse(
-            message="Something went wrong. Please try again.",
-            input_tokens=None,
-            output_tokens=None,
-            total_tokens=None,
-        )
+        except OpenAIAPIConnectionError as e:
+            _log_llm_upstream_error(e, "chat")
+            return ChatResponse(
+                message="Cannot reach the language model. Please try again later." + _debug_llm_error_suffix(e),
+                input_tokens=None,
+                output_tokens=None,
+                total_tokens=None,
+            )
+        except OpenAIAPIError as e:
+            _log_llm_upstream_error(e, "chat")
+            msg = _user_message_for_api_error(e) + _debug_llm_error_suffix(e)
+            return ChatResponse(
+                message=msg,
+                input_tokens=None,
+                output_tokens=None,
+                total_tokens=None,
+            )
+        except Exception as e:
+            logger.exception("Unexpected error in chat: %s", e)
+            return ChatResponse(
+                message="Something went wrong. Please try again.",
+                input_tokens=None,
+                output_tokens=None,
+                total_tokens=None,
+            )
 
-    evaluation: dict | None = None
-    if _deepeval_scoring_enabled():
-        # Own span: after @workflow(handle_chat) returns the "current" OTEL span is unreliable for attributes
-        # in some setups; a dedicated child span shows up clearly in APM (e.g. Elastic) waterfalls.
-        with tracer.start_as_current_span("deepeval_answer_relevancy") as eval_span:
-            evaluation = score_chat_turn(query, reply)
-            if evaluation:
-                eval_span.set_attribute("deepeval.metric", "answer_relevancy")
-                if isinstance(evaluation.get("score"), (int, float)):
-                    s = float(evaluation["score"])
-                    eval_span.set_attribute("deepeval.score", s)
-                    eval_span.set_attribute("deepeval.answer_relevancy", s)
-                if evaluation.get("skipped"):
-                    eval_span.set_attribute("deepeval.skipped", True)
-                if evaluation.get("error"):
-                    eval_span.set_attribute(
-                        "deepeval.error", str(evaluation["error"])[:512]
-                    )
-                jm = evaluation.get("judge_model")
-                if jm:
-                    eval_span.set_attribute("deepeval.judge_model", str(jm)[:128])
-        if evaluation:
-            if isinstance(evaluation.get("score"), (int, float)):
-                logger.info("DeepEval answer_relevancy score=%s", evaluation["score"])
-            elif evaluation.get("skipped"):
-                logger.info("DeepEval skipped: %s", evaluation.get("reason", ""))
-            elif evaluation.get("error"):
-                logger.warning("DeepEval failed: %s", evaluation.get("error"))
-
-        tc_eval = None
-        if _deepeval_agent_scoring_enabled() and agent_tools:
-            with tracer.start_as_current_span("deepeval_task_completion") as tc_span:
-                tc_eval = score_agent_task_completion(query, reply, agent_tools)
-                if tc_eval is not None:
-                    tc_span.set_attribute("deepeval.metric", "task_completion")
-                    if isinstance(tc_eval.get("score"), (int, float)):
-                        tcs = float(tc_eval["score"])
-                        tc_span.set_attribute("deepeval.score", tcs)
-                        tc_span.set_attribute("deepeval.task_completion", tcs)
-                    if tc_eval.get("error"):
-                        tc_span.set_attribute(
-                            "deepeval.error", str(tc_eval["error"])[:512]
+        evaluation: dict | None = None
+        if _deepeval_scoring_enabled():
+            # Own span: after @workflow(handle_chat) returns the "current" OTEL span is unreliable for attributes
+            # in some setups; a dedicated child span shows up clearly in APM (e.g. Elastic) waterfalls.
+            with tracer.start_as_current_span("deepeval_answer_relevancy") as eval_span:
+                evaluation = score_chat_turn(query, reply)
+                if evaluation:
+                    eval_span.set_attribute("deepeval.metric", "answer_relevancy")
+                    if isinstance(evaluation.get("score"), (int, float)):
+                        s = float(evaluation["score"])
+                        eval_span.set_attribute("deepeval.score", s)
+                        eval_span.set_attribute("deepeval.answer_relevancy", s)
+                    if evaluation.get("skipped"):
+                        eval_span.set_attribute("deepeval.skipped", True)
+                    if evaluation.get("error"):
+                        eval_span.set_attribute(
+                            "deepeval.error", str(evaluation["error"])[:512]
                         )
-                    jm = tc_eval.get("judge_model")
+                    jm = evaluation.get("judge_model")
                     if jm:
-                        tc_span.set_attribute("deepeval.judge_model", str(jm)[:128])
-                    tc_span.set_attribute("deepeval.tools_invoked_count", len(agent_tools))
-                    evaluation = {**evaluation, "task_completion": tc_eval}
-            if tc_eval is not None:
-                if isinstance(tc_eval.get("score"), (int, float)):
-                    logger.info("DeepEval task_completion score=%s", tc_eval["score"])
-                elif tc_eval.get("error"):
-                    logger.warning("DeepEval task_completion failed: %s", tc_eval.get("error"))
+                        eval_span.set_attribute("deepeval.judge_model", str(jm)[:128])
+            if evaluation:
+                if isinstance(evaluation.get("score"), (int, float)):
+                    logger.info("DeepEval answer_relevancy score=%s", evaluation["score"])
+                elif evaluation.get("skipped"):
+                    logger.info("DeepEval skipped: %s", evaluation.get("reason", ""))
+                elif evaluation.get("error"):
+                    logger.warning("DeepEval failed: %s", evaluation.get("error"))
 
-    return ChatResponse(
-        message=reply,
-        input_tokens=usage.get("input_tokens"),
-        output_tokens=usage.get("output_tokens"),
-        total_tokens=usage.get("total_tokens"),
-        traceflow=trace_root,
-        evaluation=evaluation,
-    )
+            tc_eval = None
+            if _deepeval_agent_scoring_enabled() and agent_tools:
+                with tracer.start_as_current_span("deepeval_task_completion") as tc_span:
+                    tc_eval = score_agent_task_completion(query, reply, agent_tools)
+                    if tc_eval is not None:
+                        tc_span.set_attribute("deepeval.metric", "task_completion")
+                        if isinstance(tc_eval.get("score"), (int, float)):
+                            tcs = float(tc_eval["score"])
+                            tc_span.set_attribute("deepeval.score", tcs)
+                            tc_span.set_attribute("deepeval.task_completion", tcs)
+                        if tc_eval.get("error"):
+                            tc_span.set_attribute(
+                                "deepeval.error", str(tc_eval["error"])[:512]
+                            )
+                        jm = tc_eval.get("judge_model")
+                        if jm:
+                            tc_span.set_attribute("deepeval.judge_model", str(jm)[:128])
+                        tc_span.set_attribute("deepeval.tools_invoked_count", len(agent_tools))
+                        evaluation = {**evaluation, "task_completion": tc_eval}
+                if tc_eval is not None:
+                    if isinstance(tc_eval.get("score"), (int, float)):
+                        logger.info("DeepEval task_completion score=%s", tc_eval["score"])
+                    elif tc_eval.get("error"):
+                        logger.warning("DeepEval task_completion failed: %s", tc_eval.get("error"))
+
+        return ChatResponse(
+            message=reply,
+            input_tokens=usage.get("input_tokens"),
+            output_tokens=usage.get("output_tokens"),
+            total_tokens=usage.get("total_tokens"),
+            traceflow=trace_root,
+            evaluation=evaluation,
+        )
 
 
 @app.get("/")

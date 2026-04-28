@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-Run 10 tool-oriented test questions against the chatbot API (weather, KB, time, convert, fetch, combos).
-Assumes CHATBOT_USE_TOOLS=true; fetch prompts need MCP_FETCH_ENABLED=true and allowlisted hosts.
+Run 15 tool- and edge-case test questions against the chatbot API (weather, KB, time, convert, fetch, combos).
+Rotates chat models across questions (same list as the UI test runner). Assumes CHATBOT_USE_TOOLS=true;
+fetch prompts need MCP_FETCH_ENABLED=true and allowlisted hosts where applicable.
 Usage: python scripts/run_llm_tests.py [--base-url http://localhost:8088] [--output results.md]
 """
 
@@ -13,6 +14,13 @@ from pathlib import Path
 from typing import Optional
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+
+MODELS = [
+    "llm-gateway/gpt-5-mini",
+    "llm-gateway/gpt-4.1-nano",
+    "llm-gateway/claude-sonnet-4-6",
+    "llm-gateway/gemini-2.5-pro",
+]
 
 QUESTIONS = [
     {
@@ -75,13 +83,46 @@ QUESTIONS = [
         "question": "In one turn, use your tools for all of: (1) current weather in San Antonio, Texas in Fahrenheit, (2) current date and time in UTC, (3) convert 50 miles to kilometers, (4) one sentence about UT Austin from the Texas colleges knowledge base. If you have a web fetch tool, also fetch https://example.com and quote one short line from the page.",
         "why": "Exercises all five tools in one user message when MCP fetch is enabled.",
     },
+    {
+        "id": 11,
+        "name": "Edge: invalid IANA timezone",
+        "question": "What is the current date and time in the America/Fakeville timezone? Use your time tool with that exact IANA timezone string.",
+        "why": "Invalid zone; tool or model should error or admit the zone is invalid.",
+    },
+    {
+        "id": 12,
+        "name": "Edge: fetch non-allowlisted host",
+        "question": "Fetch https://example.org/ with your URL fetch tool and summarize the page. If your policy blocks that host, say so clearly.",
+        "why": "Stresses allowlist when only e.g. example.com is permitted.",
+    },
+    {
+        "id": 13,
+        "name": "Edge: nonexistent tool",
+        "question": "Use your get_stock_quote tool to fetch the latest price of AAPL. If you do not have that tool, say so and do not invent a price.",
+        "why": "No such tool; checks hallucination vs honest refusal.",
+    },
+    {
+        "id": 14,
+        "name": "Edge: KB stats not in corpus",
+        "question": "Using only the Texas colleges knowledge base, list the exact current undergraduate enrollment numbers for UT Austin, Texas A&M, and Rice University for the current academic year.",
+        "why": "Corpus unlikely to have exact enrollments; invites grounding errors.",
+    },
+    {
+        "id": 15,
+        "name": "Edge: nonsense convert_units",
+        "question": "Use convert_units to convert the text hello exactly into kilograms and report the numeric result.",
+        "why": "Nonsense input; stresses argument parsing or refusal.",
+    },
 ]
 
 
-def call_chat(base_url: str, messages: list[dict]) -> dict:
+def call_chat(base_url: str, messages: list[dict], model: str | None = None) -> dict:
     """POST to /api/chat and return the JSON response."""
     url = f"{base_url.rstrip('/')}/api/chat"
-    body = json.dumps({"messages": messages}).encode("utf-8")
+    payload: dict = {"messages": messages}
+    if model:
+        payload["model"] = model
+    body = json.dumps(payload).encode("utf-8")
     req = Request(url, data=body, method="POST", headers={"Content-Type": "application/json"})
     with urlopen(req, timeout=120) as resp:
         return json.loads(resp.read().decode("utf-8"))
@@ -90,15 +131,18 @@ def call_chat(base_url: str, messages: list[dict]) -> dict:
 def run_tests(base_url: str, output_path: Optional[Path]) -> list[dict]:
     """Run all questions and return list of {question, response, tokens, error}."""
     results = []
+    n = len(QUESTIONS)
     for q in QUESTIONS:
-        print(f"  [{q['id']}/10] {q['name']}...", end=" ", flush=True)
+        model = MODELS[(q["id"] - 1) % len(MODELS)]
+        print(f"  [{q['id']}/{n}] {q['name']} ({model})...", end=" ", flush=True)
         try:
-            data = call_chat(base_url, [{"role": "user", "content": q["question"]}])
+            data = call_chat(base_url, [{"role": "user", "content": q["question"]}], model=model)
             results.append({
                 "id": q["id"],
                 "name": q["name"],
                 "question": q["question"],
                 "why": q["why"],
+                "model": model,
                 "response": data.get("message", ""),
                 "input_tokens": data.get("input_tokens"),
                 "output_tokens": data.get("output_tokens"),
@@ -114,6 +158,7 @@ def run_tests(base_url: str, output_path: Optional[Path]) -> list[dict]:
                 "name": q["name"],
                 "question": q["question"],
                 "why": q["why"],
+                "model": model,
                 "response": None,
                 "input_tokens": None,
                 "output_tokens": None,
@@ -127,6 +172,7 @@ def run_tests(base_url: str, output_path: Optional[Path]) -> list[dict]:
                 "name": q["name"],
                 "question": q["question"],
                 "why": q["why"],
+                "model": model,
                 "response": None,
                 "input_tokens": None,
                 "output_tokens": None,
@@ -140,6 +186,7 @@ def run_tests(base_url: str, output_path: Optional[Path]) -> list[dict]:
                 "name": q["name"],
                 "question": q["question"],
                 "why": q["why"],
+                "model": model,
                 "response": None,
                 "input_tokens": None,
                 "output_tokens": None,
@@ -161,6 +208,7 @@ def write_markdown(results: list[dict], path: Path) -> None:
         f.write(f"- **Total tokens:** {total_tokens}\n\n---\n\n")
         for r in results:
             f.write(f"## {r['id']}. {r['name']}\n\n")
+            f.write(f"**Model:** `{r.get('model', '')}`\n\n")
             f.write(f"**Why:** {r['why']}\n\n")
             f.write("**Question:**\n\n")
             f.write(f"> {r['question']}\n\n")
@@ -183,7 +231,7 @@ def main() -> int:
         args.output = Path(f"llm-test-results-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}.md")
     print(f"Base URL: {args.base_url}")
     print(f"Output:   {args.output}")
-    print("Running 10 questions...\n")
+    print(f"Running {len(QUESTIONS)} questions...\n")
     results = run_tests(args.base_url, args.output)
     write_markdown(results, args.output)
     errors = sum(1 for r in results if r["error"])

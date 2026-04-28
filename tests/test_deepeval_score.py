@@ -44,7 +44,7 @@ def test_resolve_judge_model_default_elastic_without_openai_model(monkeypatch):
     monkeypatch.setenv("OPENAI_API_BASE", "https://elastic.litellm-prod.ai")
     monkeypatch.delenv("OPENAI_MODEL", raising=False)
     monkeypatch.delenv("DEEPEVAL_JUDGE_MODEL", raising=False)
-    assert _resolve_judge_model() == "llm-gateway/gpt-4.1"
+    assert _resolve_judge_model() == "llm-gateway/gemini-3.1-pro-preview"
 
 
 def test_resolve_judge_model_default_openai_com_without_openai_model(monkeypatch):

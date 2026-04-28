@@ -35,7 +35,7 @@ services:
       # When true (default), runs Task Completion judge if the agent loop invoked tools (adds LLM calls)
       - DEEPEVAL_SCORE_AGENT=${DEEPEVAL_SCORE_AGENT:-true}
       # Judge only; chat still uses OPENAI_MODEL. Override with empty + code fallback if needed.
-      - DEEPEVAL_JUDGE_MODEL=${DEEPEVAL_JUDGE_MODEL:-llm-gateway/gpt-4.1}
+      - DEEPEVAL_JUDGE_MODEL=${DEEPEVAL_JUDGE_MODEL:-llm-gateway/gemini-3.1-pro-preview}
       - DEEPEVAL_INCLUDE_REASON=${DEEPEVAL_INCLUDE_REASON:-true}
       - DEEPEVAL_TELEMETRY_OPT_OUT=${DEEPEVAL_TELEMETRY_OPT_OUT:-YES}
     depends_on:

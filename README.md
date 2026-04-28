@@ -49,7 +49,7 @@ The chat workflow runs a small **keyword retrieval** step over [`app/data/texas_
 
    - App (chat UI): [http://localhost:8088](http://localhost:8088)
    - Health: [http://localhost:8088/health](http://localhost:8088/health)
-   - **Run test questions** (in the UI) runs ten prompts meant to exercise each agent tool (`get_current_weather`, `search_knowledge_base`, `get_current_time`, `convert_units`, and optionally `fetch_url`). Set **`CHATBOT_USE_TOOLS=true`**. For URL fetch prompts to call **`fetch_url`**, set **`MCP_FETCH_ENABLED=true`** and include **`example.com`** (or your target host) in **`MCP_FETCH_ALLOWLIST`**. You can also run **`python scripts/run_llm_tests.py`** against the same API.
+   - **Run test questions** (in the UI) runs **15** prompts: core tool coverage plus five edge-case prompts (invalid timezone, non-allowlisted fetch, fake tool name, KB overreach, nonsense conversion). Each prompt uses a **rotating** chat model id (`llm-gateway/gpt-5-mini`, `gpt-4.1-nano`, `claude-sonnet-4-6`, `gemini-2.5-pro` in cycle) via the optional **`model`** field on **`POST /api/chat`**. Set **`CHATBOT_USE_TOOLS=true`**. For URL fetch prompts to call **`fetch_url`**, set **`MCP_FETCH_ENABLED=true`** and include **`example.com`** (or your target host) in **`MCP_FETCH_ALLOWLIST`**. You can also run **`python scripts/run_llm_tests.py`** against the same API (same questions and rotation).
 
 5. **View traces in Elastic**
 
@@ -118,7 +118,7 @@ CHATBOT_USE_TOOLS=true
 | `CHATBOT_PARALLEL_TOOL_CALLS` | No | If **`true`**, omit `parallel_tool_calls=false` on chat requests (OpenAI-style parallel tools). Default **`false`** (sequential tool rounds; more reliable on some LLM gateways). |
 | `WEATHER_PROVIDER` | No | **`open_meteo`** (default): `get_current_weather` uses [Open-Meteo](https://open-meteo.com/) (outbound HTTPS, no key). Allow **`geocoding-api.open-meteo.com`** and **`api.open-meteo.com`** from the app container. **`stub`**: fixed demo temperatures (offline / CI). |
 | `DEEPEVAL_SCORE_CHAT` | No | If **`true`**, runs [DeepEval](https://github.com/confident-ai/deepeval) **Answer Relevancy** on each successful `/api/chat` turn and returns scores in **`evaluation`** (extra latency + judge LLM cost via **`OPENAI_API_KEY`**). Default **`false`**. |
-| `DEEPEVAL_JUDGE_MODEL` | No | Model id for DeepEval judges only (docker default **`llm-gateway/gpt-4.1`**; falls back to **`OPENAI_MODEL`**, then **`gpt-4.1`** / **`llm-gateway/gpt-4.1`** on Elastic). Chat uses **`OPENAI_MODEL`**. |
+| `DEEPEVAL_JUDGE_MODEL` | No | Model id for DeepEval judges only (docker default **`llm-gateway/gemini-3.1-pro-preview`**; falls back to **`OPENAI_MODEL`**, then **`llm-gateway/gemini-3.1-pro-preview`** on hosted Elastic LiteLLM with no model set, or **`gpt-4.1`** on api.openai.com). Chat uses **`OPENAI_MODEL`** unless **`POST /api/chat`** JSON includes **`model`**. |
 | `DEEPEVAL_INCLUDE_REASON` | No | If **`true`** (default), include a short textual reason in **`evaluation`**. |
 | `DEEPEVAL_TELEMETRY_OPT_OUT` | No | Set **`YES`** to opt out of DeepEval telemetry (default in Compose). |
 | `CHATBOT_SYSTEM_INSTRUCTION` | No | Override the default system prompt (brief answers unless the user wants more). |
@@ -131,7 +131,7 @@ The app image installs **DeepEval** via [`requirements.txt`](requirements.txt) (
 
 ## What gets traced
 
-- **Chat workflow**: each `/api/chat` request is a workflow; the LLM call is a child span. Optional **`category`** on the JSON body is validated against a fixed use-case list (default **`Other`**) and exported as OTEL **`prompt.category`**. **`GET /api/prompt/categories`** returns the allowed labels for UIs.
+- **Chat workflow**: each `/api/chat` request is a workflow; the LLM call is a child span. Optional **`category`** on the JSON body is validated against a fixed use-case list (default **`Other`**) and exported as OTEL **`prompt.category`**. Optional **`model`** overrides **`OPENAI_MODEL`** for that request only (demo / test runner; any caller with API access can use models your key allows). **`GET /api/prompt/categories`** returns the allowed labels for UIs.
 - **LLM spans**: provider (OpenAI), model, prompts/completions (if not disabled), token usage, latency.
 - **Tool calls**: when the model uses tools, those appear as part of the trace. The **`get_current_weather`** tool uses **Open-Meteo** for live conditions when **`WEATHER_PROVIDER=open_meteo`** (default); the app needs outbound HTTPS to **`geocoding-api.open-meteo.com`** and **`api.open-meteo.com`**. Use **`WEATHER_PROVIDER=stub`** for the previous fixed demo replies without calling the network.
 - **MCP fetch** (`MCP_FETCH_ENABLED=true`): adds **`fetch_url`** backed by the official **`mcp-server-fetch`** subprocess. Traceloop still emits a **`fetch_url`** tool span; the app also records an OpenTelemetry span **`mcp.tool.fetch`** with **`mcp.server`**, **`mcp.tool.name`**, and **`url.host`**. Prefer **`MCP_FETCH_ALLOWLIST`** outside local demos.

@@ -117,6 +117,7 @@
     .chat-column {
       flex: 1;
       min-width: 0;
+      min-height: 0;
       width: 100%;
       max-width: min(1680px, 100%);
       margin: 0 auto;
@@ -308,11 +309,14 @@
 
     #messages {
       flex: 1;
+      min-height: 0;
       overflow-y: auto;
+      overflow-x: hidden;
       display: flex;
       flex-direction: column;
       gap: 1.15rem;
       padding-bottom: 1rem;
+      scroll-behavior: smooth;
     }
 
     .msg {
@@ -596,6 +600,15 @@
     /** One ID per conversation for server tracing (see X-Session-ID in FastAPI). */
     let chatSessionId = crypto.randomUUID();
 
+    /** Scroll the chat column to the latest message (after layout / trace DOM updates). */
+    function scrollChatToBottom() {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          messagesEl.scrollTop = messagesEl.scrollHeight;
+        });
+      });
+    }
+
     function newChatHeaders() {
       return {
         'Content-Type': 'application/json',
@@ -688,7 +701,7 @@
       wrap.appendChild(assistantDiv);
       wrap.appendChild(traceCol);
       messagesEl.appendChild(wrap);
-      messagesEl.scrollTop = messagesEl.scrollHeight;
+      scrollChatToBottom();
 
       return {
         wrap,
@@ -880,7 +893,13 @@
       }
     }
 
-    // Batch assumes CHATBOT_USE_TOOLS=true. fetch_url (Q5, Q10) only exists when MCP_FETCH_ENABLED=true and host is allowlisted (e.g. example.com).
+    // Batch assumes CHATBOT_USE_TOOLS=true. fetch_url (Q5, Q10, Q12) only when MCP_FETCH_ENABLED=true; Q12 uses a non-allowlisted host to stress policy.
+    const TEST_CHAT_MODELS = [
+      'llm-gateway/gpt-5-mini',
+      'llm-gateway/gpt-4.1-nano',
+      'llm-gateway/claude-sonnet-4-6',
+      'llm-gateway/gemini-2.5-pro'
+    ];
     const TEST_QUESTIONS = [
       { id: 1, name: 'Tool: current weather (Houston)', question: 'What is the current weather in Houston, Texas? Use your tools and report temperature in Fahrenheit.' },
       { id: 2, name: 'Tool: Texas colleges knowledge base (Rice)', question: 'Using the Texas colleges knowledge base, what notable facts can you share about Rice University in Houston?' },
@@ -891,7 +910,12 @@
       { id: 7, name: 'Multi: KB Texas A&M + weather College Station', question: 'Give one fact about Texas A&M University from your Texas colleges knowledge base, then report the current weather in College Station, Texas in Fahrenheit.' },
       { id: 8, name: 'Multi: convert F to C + UTC time', question: 'Convert 212 degrees Fahrenheit to Celsius using your tool, and tell me the current time in UTC using your time tool.' },
       { id: 9, name: 'Multi: compare two schools (KB only)', question: 'Compare The University of Texas at Austin and Texas A&M University using only facts from your Texas colleges knowledge base: city or location and one academic or campus strength for each.' },
-      { id: 10, name: 'Multi: orchestration (weather, time, convert, KB, optional fetch)', question: 'In one turn, use your tools for all of: (1) current weather in San Antonio, Texas in Fahrenheit, (2) current date and time in UTC, (3) convert 50 miles to kilometers, (4) one sentence about UT Austin from the Texas colleges knowledge base. If you have a web fetch tool, also fetch https://example.com and quote one short line from the page.' }
+      { id: 10, name: 'Multi: orchestration (weather, time, convert, KB, optional fetch)', question: 'In one turn, use your tools for all of: (1) current weather in San Antonio, Texas in Fahrenheit, (2) current date and time in UTC, (3) convert 50 miles to kilometers, (4) one sentence about UT Austin from the Texas colleges knowledge base. If you have a web fetch tool, also fetch https://example.com and quote one short line from the page.' },
+      { id: 11, name: 'Edge: invalid IANA timezone', question: 'What is the current date and time in the America/Fakeville timezone? Use your time tool with that exact IANA timezone string.' },
+      { id: 12, name: 'Edge: fetch non-allowlisted host', question: 'Fetch https://example.org/ with your URL fetch tool and summarize the page. If your policy blocks that host, say so clearly.' },
+      { id: 13, name: 'Edge: nonexistent tool', question: 'Use your get_stock_quote tool to fetch the latest price of AAPL. If you do not have that tool, say so and do not invent a price.' },
+      { id: 14, name: 'Edge: KB stats not in corpus', question: 'Using only the Texas colleges knowledge base, list the exact current undergraduate enrollment numbers for UT Austin, Texas A&M, and Rice University for the current academic year.' },
+      { id: 15, name: 'Edge: nonsense convert_units', question: 'Use convert_units to convert the text hello exactly into kilograms and report the numeric result.' }
     ];
 
     function addMessage(role, content, isTyping = false) {
@@ -902,7 +926,7 @@
         <div class="content">${escapeHtml(content)}</div>
       `;
       messagesEl.appendChild(div);
-      messagesEl.scrollTop = messagesEl.scrollHeight;
+      scrollChatToBottom();
       return div;
     }
 
@@ -1092,6 +1116,7 @@
         }
         appendEvaluation(assistantDiv, data.evaluation);
         assistantDiv.classList.remove('typing');
+        scrollChatToBottom();
       } catch (err) {
         contentEl.textContent = 'Sorry, something went wrong.';
         assistantDiv.classList.remove('typing');
@@ -1101,6 +1126,7 @@
         pe.textContent = 'Request failed — no trace.';
         traceBodyEl.appendChild(pe);
         setError(err.message || 'Request failed');
+        scrollChatToBottom();
       }
 
       submitBtn.disabled = false;
@@ -1122,7 +1148,8 @@
       setError('');
       for (let i = 0; i < TEST_QUESTIONS.length; i++) {
         const q = TEST_QUESTIONS[i];
-        runTestsProgress.textContent = `Running ${i + 1}/${TEST_QUESTIONS.length}: ${q.name}`;
+        const testModel = TEST_CHAT_MODELS[i % TEST_CHAT_MODELS.length];
+        runTestsProgress.textContent = `Running ${i + 1}/${TEST_QUESTIONS.length}: ${q.name} · ${testModel}`;
         addMessage('user', `[Test ${q.id}] ${q.question}`);
         const turn = addAssistantTurnWithTrace(true);
         const assistantDiv = turn.assistantDiv;
@@ -1138,6 +1165,7 @@
               messages: [{ role: 'user', content: q.question }],
               category: categoryValue,
               name: nameValue,
+              model: testModel
             })
           });
           if (!res.ok) {
@@ -1170,7 +1198,7 @@
           setError(err.message || 'Request failed');
         }
         assistantDiv.classList.remove('typing');
-        messagesEl.scrollTop = messagesEl.scrollHeight;
+        scrollChatToBottom();
       }
       runTestsProgress.textContent = 'Done. ' + TEST_QUESTIONS.length + ' questions run.';
       runTestsBtn.disabled = false;
