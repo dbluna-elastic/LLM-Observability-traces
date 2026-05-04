@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Elastic logo mark (cluster bars). Official brand colors.
+  Logo is a trademark of Elasticsearch B.V. Used for demo UI integration.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none">
+  <title>Elastic logo</title>
+  <rect x="8" y="20" width="112" height="28" rx="14" fill="#FEC514" stroke="rgba(0,0,0,0.08)" stroke-width="1"/>
+  <rect x="8" y="56" width="72" height="28" rx="14" fill="#00BFB3" stroke="rgba(0,0,0,0.08)" stroke-width="1"/>
+  <rect x="8" y="92" width="96" height="28" rx="14" fill="#343741" stroke="rgba(255,255,255,0.06)" stroke-width="1"/>
+</svg>
